@@ -3,12 +3,21 @@
   "note": "SHAs are filled when submodules are pinned. Empty means not yet vendored.",
   "vitasdk": {
     "installPrefix": "$HOME/vitasdk",
-    "bootstrap": "https://github.com/vitasdk/vdpm"
+    "bootstrap": "https://github.com/vitasdk/vdpm",
+    "channel": "2026.08",
+    "corePackage": "vitasdk-core-2026.08.1-1",
+    "gcc": "15.2.0 arm-vita-eabi",
+    "packages": ["zlib-1.3.2-2", "vitaGL-0.0.0.r1448.gcd3791e-1"]
+  },
+  "vitacompanionCli": {
+    "install": "npm install -g --prefix $HOME/.local vitacompanion-cli",
+    "bin": "$HOME/.local/bin/vita"
   },
   "submodules": {
     "third_party/DolRecomp": {
       "url": "https://github.com/ExpansionPak/DolRecomp.git",
-      "revision": null
+      "revision": "40637c4683bd2820ac5b23607ee344720beb26df",
+      "shallow": true
     },
     "third_party/ModernGekko": {
       "url": "https://github.com/ExpansionPak/ModernGekko.git",

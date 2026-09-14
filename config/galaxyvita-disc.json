@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "supportState": "unverified-local-image",
+  "supportState": "container-hashed",
   "expectedTitleId": "RMGE01",
   "expectedRegion": "NTSC-USA",
   "expectedRevision": 0,
@@ -11,7 +11,7 @@
   },
   "local": {
     "pathHint": "Super Mario Galaxy [RMGE01].wbfs",
-    "sizeBytes": null,
-    "sha256": null
+    "sizeBytes": 3508535296,
+    "sha256": "0f5ba5a1c9da2a3319daa509db064a41e16a2a04c9114802a8f8addc14c1b2de"
   }
 }
