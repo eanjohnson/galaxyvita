@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "supportState": "container-hashed",
+  "supportState": "rmge01-rev0-dol-matches-galaxypad",
   "expectedTitleId": "RMGE01",
   "expectedRegion": "NTSC-USA",
   "expectedRevision": 0,
@@ -12,6 +12,18 @@
   "local": {
     "pathHint": "Super Mario Galaxy [RMGE01].wbfs",
     "sizeBytes": 3508535296,
-    "sha256": "0f5ba5a1c9da2a3319daa509db064a41e16a2a04c9114802a8f8addc14c1b2de"
+    "sha256": "0f5ba5a1c9da2a3319daa509db064a41e16a2a04c9114802a8f8addc14c1b2de",
+    "titleId": "RMGE01",
+    "region": "NTSC-USA",
+    "ios": 33,
+    "virtualSizeBytes": 4699979776,
+    "witFileCount": 2383,
+    "mainDol": {
+      "path": "sys/main.dol",
+      "sizeBytes": 6283264,
+      "sha256": "2c680585a8f58e1cc9c5521b579057f12b124ff0ef409e470a57606c50a93c09",
+      "sha1": "9a71008ae1ee9010e267fa67d1f0b0d4f0e895dd",
+      "matchesGalaxyPadPin": true
+    }
   }
 }

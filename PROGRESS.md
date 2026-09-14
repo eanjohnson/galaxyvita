@@ -2,6 +2,12 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-14 — DOL identity matches GalaxyPad RMGE01 rev 0
+
+- `wit` v3.05a r8638 (host, gitignored under `extern/wit`) dumps the WBFS as `RMGE01` / NTSC-USA / IOS 33 / 1 signed DATA partition.
+- Extracted **only** `sys/main.dol` (6,283,264 bytes). SHA-256 `2c680585a8f58e1cc9c5521b579057f12b124ff0ef409e470a57606c50a93c09` **equals** GalaxyPad's pin. Container WBFS hash still differs; executable identity is the same.
+- Host DolRecomp (`40637c4`, C backend, no LLVM) builds; 19/19 tests pass. Wii extract uses the wit bridge.
+
 ## 2026-09-14 — Phase 1 host toolchain + hello VPK
 
 - VitaSDK **2026.08** (`vitasdk-core-2026.08.1-1`) installed at `$HOME/vitasdk` via vdpm. `arm-vita-eabi-gcc` is **15.2.0**, `--with-arch=armv7-a --with-tune=cortex-a9 --with-fpu=neon --with-float=hard --with-mode=thumb`.
