@@ -38,6 +38,10 @@ compile_commands.json
 extern/wit/
 extern/vdpm/
 extern/vitasdk-samples/
+extern/vita-plugins/**/*.suprx
+extern/vita-plugins/**/*.skprx
+extern/vita-plugins/**/*.vpk
+extern/vita-plugins/**/*.rco
 
 # Host env
 .env

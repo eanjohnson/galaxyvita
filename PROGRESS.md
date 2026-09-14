@@ -2,6 +2,13 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-14 — Vita plugins downloaded
+
+- All plugins from `docs/VITA-SETUP.md` fetched into `extern/vita-plugins/` (binaries gitignored).
+- Includes vitacompanion 1.06 (user+kernel), catlog v1.2, PrincessLog v1.0, CapUnlocker v1.4 (CoreUnlocker80000H successor), LowMemMode v1.2, PSVshell v1.2beta, PSVshellPlus v1.4, oclockvita 1.2.1, ShaRKBR33D v.1.2.
+- `libshacccg.suprx` is Sony's shader compiler and is **not** downloaded. ShaRKBR33D extracts it on the Vita.
+- Hashes and install paths: `extern/vita-plugins/MANIFEST.md`. Re-fetch: `./scripts/download-vita-plugins.sh`.
+
 ## 2026-09-14 — DOL identity matches GalaxyPad RMGE01 rev 0
 
 - `wit` v3.05a r8638 (host, gitignored under `extern/wit`) dumps the WBFS as `RMGE01` / NTSC-USA / IOS 33 / 1 signed DATA partition.
