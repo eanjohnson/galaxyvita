@@ -1,0 +1,67 @@
+# User-supplied Nintendo data — never commit
+*.wbfs
+*.iso
+*.gcm
+*.rvz
+*.wia
+*.ciso
+*.nkit.*
+*.dol
+*.rel
+*.rso
+*.elf
+*.self
+*.vpk
+eboot.bin
+param.sfo
+
+# Local ROM / extract / generated artifacts
+ref/rom/
+ref/petari/
+generated/
+extracted/
+aot/
+ux0-dumps/
+nand/
+saves/
+
+# Build
+build/
+build-*/
+.cache/
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+compile_commands.json
+
+# Tooling checkouts (submodules are tracked; extra clones are not)
+extern/wit/
+extern/vdpm/
+extern/vitasdk-samples/
+
+# Host env
+.env
+.env.local
+scripts/.vita-ip
+node_modules/
+
+# Logs / dumps (keep text logs that we explicitly add under docs/)
+*.log
+core
+crash.log
+*.bin
+!vita/sce_sys/**
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.idea/
+.vscode/
+*.user
+
+# Python
+__pycache__/
+*.pyc
+.venv/

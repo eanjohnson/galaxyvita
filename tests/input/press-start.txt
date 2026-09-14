@@ -1,0 +1,4 @@
+wait 3s
+press start
+wait 100ms
+release start

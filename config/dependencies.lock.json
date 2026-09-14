@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "note": "SHAs are filled when submodules are pinned. Empty means not yet vendored.",
+  "vitasdk": {
+    "installPrefix": "$HOME/vitasdk",
+    "bootstrap": "https://github.com/vitasdk/vdpm"
+  },
+  "submodules": {
+    "third_party/DolRecomp": {
+      "url": "https://github.com/ExpansionPak/DolRecomp.git",
+      "revision": null
+    },
+    "third_party/ModernGekko": {
+      "url": "https://github.com/ExpansionPak/ModernGekko.git",
+      "revision": null
+    },
+    "third_party/RecompCore": {
+      "url": "https://github.com/ExpansionPak/RecompCore.git",
+      "revision": null,
+      "comment": "Prefer the revision ModernGekko vendors; do not mix graphs."
+    }
+  }
+}

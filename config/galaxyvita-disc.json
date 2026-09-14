@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "supportState": "unverified-local-image",
+  "expectedTitleId": "RMGE01",
+  "expectedRegion": "NTSC-USA",
+  "expectedRevision": 0,
+  "galaxyPadReference": {
+    "comment": "GalaxyPad pin for RMGE01 rev 0. Our local WBFS is hashed in docs/DISC-IDENTITY.md; do not assume a match until that file says so.",
+    "containerSha256": "bd0d3d4bc1376a8614fd8f4fee5df86be6bc676e9d617944918fda79ed9e3589",
+    "mainDolSha256": "2c680585a8f58e1cc9c5521b579057f12b124ff0ef409e470a57606c50a93c09"
+  },
+  "local": {
+    "pathHint": "Super Mario Galaxy [RMGE01].wbfs",
+    "sizeBytes": null,
+    "sha256": null
+  }
+}

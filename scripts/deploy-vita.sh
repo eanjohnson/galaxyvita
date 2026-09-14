@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Push the current build to a real Vita via vitacompanion. No game data is transferred.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/vita-env.sh"
+
+if [[ -z "${GALAXYVITA_IP:-}" ]]; then
+  echo "Set GALAXYVITA_IP or write scripts/.vita-ip" >&2
+  exit 1
+fi
+
+BUILD="$ROOT/generated/build/vita"
+TITLE="${GALAXYVITA_TITLEID}"
+IP="$GALAXYVITA_IP"
+
+cmd() {
+  # vitacompanion wants a newline. socat is present even when netcat is not.
+  printf '%s\n' "$1" | socat - "TCP:$IP:1338,connect-timeout=5"
+}
+
+wake() {
+  cmd "screen on; nosleep on" || true
+}
+
+if [[ "${1:-}" == "--vpk" ]]; then
+  VPK=$(ls -1 "$BUILD"/*.vpk 2>/dev/null | head -1 || true)
+  if [[ -z "$VPK" ]]; then
+    echo "No VPK in $BUILD — run ./scripts/build-vita.sh" >&2
+    exit 1
+  fi
+  wake
+  echo "Uploading $(basename "$VPK") to ux0:/download/"
+  curl -q --ftp-method nocwd -T "$VPK" "ftp://$IP:1337/ux0:/download/$(basename "$VPK")"
+  echo "Install once with VitaShell, then use ./scripts/deploy-vita.sh for eboot updates."
+  exit 0
+fi
+
+EBOOT=""
+for c in "$BUILD/eboot.bin" "$BUILD/galaxyvita.self" "$BUILD/hello_vita.self"; do
+  if [[ -f "$c" ]]; then EBOOT="$c"; break; fi
+done
+# vita_create_self typically names it ${target}.self next to the elf
+if [[ -z "$EBOOT" ]]; then
+  EBOOT=$(ls -1 "$BUILD"/*.self 2>/dev/null | head -1 || true)
+fi
+if [[ -z "$EBOOT" ]]; then
+  echo "No eboot/self in $BUILD — run ./scripts/build-vita.sh" >&2
+  exit 1
+fi
+
+wake
+cmd "quit $TITLE" || cmd "quit all" || true
+echo "Uploading $(basename "$EBOOT") -> ux0:/app/$TITLE/eboot.bin"
+curl -q --ftp-method nocwd -T "$EBOOT" "ftp://$IP:1337/ux0:/app/$TITLE/eboot.bin"
+cmd "launch $TITLE"
+echo "Launched $TITLE on $IP"
