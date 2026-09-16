@@ -8,7 +8,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   endif()
 endif()
 
-project(galaxyvita C CXX)
+project(galaxyvita C CXX ASM)
 
 include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 
@@ -43,9 +43,29 @@ if(_aot_n EQUAL 0 AND _aot_src_n EQUAL 0)
   message(FATAL_ERROR "No AOT objects or sources. Run ./scripts/generate-aot.sh and ./scripts/measure-aot-size.sh")
 endif()
 
+# vita-elf-create appends about 1.8 KB of SCE module data at the end of the
+# read-only segment and aborts if that segment ends within 1.8 KB of a page
+# boundary -- which is arbitrary, so roughly half of all builds hit it for a
+# reason unrelated to the change being built. scripts/build-vita.sh raises this
+# and rebuilds until it fits.
+set(GALAXYVITA_LINK_PAD "0" CACHE STRING "bytes of .rodata padding for vita-elf-create")
+if(GALAXYVITA_LINK_PAD GREATER 0)
+  file(WRITE "${CMAKE_BINARY_DIR}/link_pad.s"
+       "\t.section .rodata\n\t.space ${GALAXYVITA_LINK_PAD}, 0\n")
+else()
+  # .space 0 is a warning, so an empty file is the zero case.
+  file(WRITE "${CMAKE_BINARY_DIR}/link_pad.s" "\n")
+endif()
+
 add_executable(galaxyvita
   vita/host/main.c
-  vita/gfx/present.c
+  # The sceGxm backend. vitaGL is not used: its runtime GLSL translator cannot
+  # compile Dolphin's shaders, so the console's Cg compiler is driven directly
+  # and the device below it has to be raw GXM.
+  vita/gfx/gxm.c
+  vita/gfx/gx_gxm.c
+  vita/gfx/shader_cache.c
+  "${CMAKE_BINARY_DIR}/link_pad.s"
   runtime/chassis.c
   runtime/flipper.c
   runtime/gx_cp.cpp
@@ -92,12 +112,7 @@ target_compile_options(galaxyvita PRIVATE
 
 target_link_libraries(galaxyvita
   m
-  vitaGL
-  mathneon
-  vitashark
-  SceShaccCgExt
   SceShaccCg_stub
-  taihen_stub
   SceGxm_stub
   SceDisplay_stub
   SceCtrl_stub
@@ -114,7 +129,10 @@ target_link_libraries(galaxyvita
 
 set_target_properties(galaxyvita PROPERTIES LINKER_LANGUAGE CXX)
 
-vita_create_self(eboot.bin galaxyvita)
+# UNSAFE is not optional: as a safe fself the ShaccCg module loads but returns
+# "fatal internal error" for every program, including a two-line control
+# shader, so no shader can be compiled on first run.
+vita_create_self(eboot.bin galaxyvita UNSAFE)
 vita_create_vpk(galaxyvita.vpk ${VITA_TITLEID} eboot.bin
   VERSION ${VITA_VERSION}
   NAME ${VITA_APP_NAME}

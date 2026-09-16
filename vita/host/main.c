@@ -1,6 +1,8 @@
-/* GalaxyVita CoreHost Phase 4: AOT + Flipper HLE + vitaGL present. */
+/* GalaxyVita CoreHost Phase 4: AOT + Flipper HLE + the sceGxm backend. */
 #include "chassis.h"
-#include "present.h"
+#include "gx_gxm.h"
+#include "gxm.h"
+#include "shader_cache.h"
 
 #include <psp2/ctrl.h>
 #include <psp2/display.h>
@@ -18,23 +20,40 @@
 #define AFFINITY_CPU2 0x40000
 
 #define LOG_PATH "ux0:data/galaxyvita/boot.log"
+#define WATCH_PATH "ux0:data/galaxyvita/watchdog.log"
 #define DOL_PATH "ux0:data/galaxyvita/sys/main.dol"
 /* The disc and NAND trees the user's own extraction produces. Neither ships in
  * the VPK; see scripts/extract-disc.sh. */
 #define GAME_ROOT "ux0:data/galaxyvita/game"
 #define NAND_ROOT "ux0:data/galaxyvita/nand"
+/* Compiled shaders, kept between runs. Not in the VPK: they are produced by
+ * the console's own compiler on first run. */
+#define GXP_DIR "ux0:data/galaxyvita/gxp"
+/* Presented frames, pulled off the console and diffed against the host
+ * rasteriser's PNGs of the same boot. */
+#define FRAME_DIR "ux0:data/galaxyvita/frames"
+/* Touch this file on the console to boot with graphics off. There are no
+ * environment variables to switch behaviour with here, and the question
+ * "is the new backend what stopped the boot?" has to be answerable without
+ * building a second binary. */
+#define NOGFX_FLAG "ux0:data/galaxyvita/nogfx.txt"
 /* Blocks, not frames. The host chassis reaches the first real geometry a little
  * past 10M and settles around 60M; anything smaller stops inside the boot. */
 #define BLOCK_CAP 60000000u
 
-unsigned int _newlib_heap_size_user = 8u * 1024u * 1024u;
+/* Guest RAM is memblocks, not heap, so the heap exists almost entirely for
+ * ShaccCg: it churns tens of megabytes per compile and how many compiles
+ * survive one process scales with how much heap there is. The shader cache
+ * persists its results, so this is paid on first run and on new shaders only. */
+unsigned int _newlib_heap_size_user = 128u * 1024u * 1024u;
+
+static int g_gfx_ready = 0;
 
 static SceUID g_log_mtx = -1;
 static SceUID g_mem1_uid = -1;
 static SceUID g_mem2_uid = -1;
 static void *g_mem1 = NULL;
 static void *g_mem2 = NULL;
-static volatile int g_gpu_ready = 0;
 static volatile int g_cpu_done = 0;
 
 static void ensure_data_dir(void) {
@@ -45,16 +64,58 @@ static void ensure_data_dir(void) {
   sceIoMkdir("ux0:data/galaxyvita/nand", 0777);
 }
 
-static void log_line(const char *msg) {
-  sceClibPrintf("%s\n", msg);
-  if (g_log_mtx >= 0)
-    sceKernelLockMutex(g_log_mtx, 1, NULL);
+/* Buffered, because the unbuffered version was throttling the emulator.
+ *
+ * One open/append/close per line on a memory card costs tens of milliseconds,
+ * and the boot logs a line per MMIO write to the PPC control register. The
+ * dispatch rate decayed 9600 -> 9400 -> 3300 -> 1200 blocks per two seconds as
+ * the log grew, and then the console looked hung: it was not, it was queueing
+ * behind its own logging, and the watchdog's own writes were starved behind it
+ * too. Batching to one write per 12 KB or per watchdog tick is ~100x fewer
+ * file operations for the same text.
+ *
+ * Still open/append/close per flush rather than a held handle, so the file's
+ * size is committed and the host can read the log over FTP while the boot
+ * runs -- which is the only way to watch it.
+ *
+ * The per-line sceClibPrintf is gone with it. Nothing on this console reads
+ * that sink unless a logging plugin is installed, and it was one more
+ * synchronous call on the same hot path. */
+static char g_log_buf[16384];
+static u32 g_log_used;
+
+static void log_flush_locked(void) {
+  if (!g_log_used)
+    return;
   SceUID fd = sceIoOpen(LOG_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
   if (fd >= 0) {
-    sceIoWrite(fd, msg, strlen(msg));
-    sceIoWrite(fd, "\n", 1);
+    sceIoWrite(fd, g_log_buf, g_log_used);
     sceIoClose(fd);
   }
+  g_log_used = 0;
+}
+
+static void log_flush(void) {
+  if (g_log_mtx >= 0)
+    sceKernelLockMutex(g_log_mtx, 1, NULL);
+  log_flush_locked();
+  if (g_log_mtx >= 0)
+    sceKernelUnlockMutex(g_log_mtx, 1);
+}
+
+static void log_line(const char *msg) {
+  size_t n = strlen(msg);
+  if (g_log_mtx >= 0)
+    sceKernelLockMutex(g_log_mtx, 1, NULL);
+  if (n + 1u > sizeof(g_log_buf) - g_log_used)
+    log_flush_locked();
+  if (n + 1u <= sizeof(g_log_buf)) {
+    memcpy(g_log_buf + g_log_used, msg, n);
+    g_log_used += (u32)n;
+    g_log_buf[g_log_used++] = '\n';
+  }
+  if (g_log_used > sizeof(g_log_buf) - 4096u)
+    log_flush_locked();
   if (g_log_mtx >= 0)
     sceKernelUnlockMutex(g_log_mtx, 1);
 }
@@ -164,32 +225,62 @@ static int pin_self(int affinity, const char *name) {
   return rc;
 }
 
-static int gpu_worker(SceSize args, void *argp) {
+/* There is no separate GPU thread any more. The GX sink is called from inside
+ * the emulated CPU's FIFO writes, so the scene has to be recorded on that
+ * thread; handing the draws to another one would only add a queue and a
+ * lifetime problem to a path that is nowhere near the frame budget. The
+ * display queue Sony starts inside sceGxmInitialize still does the swap and
+ * the vblank wait on its own thread. */
+
+/* The device stops logging a few seconds into the boot while the host, running
+ * the same blocks, carries on for tens of millions. Three explanations fit
+ * that evidence -- the emulated CPU is stuck, it is merely slow, or it is fine
+ * and the logging from that thread has stopped working -- and they are
+ * distinguished by a heartbeat from a *different* thread: no line at all means
+ * the process or its file I/O is gone, a line with a frozen hit count means
+ * the CPU thread is stuck and says where, and a line with a rising count means
+ * only the logging was lost. */
+static const Chassis *volatile g_watch;
+
+static int watchdog(SceSize args, void *argp) {
   (void)args;
   (void)argp;
-  pin_self(AFFINITY_CPU1, "gpu-fifo");
-  if (!gfx_present_init()) {
-    char buf[192];
-    snprintf(buf, sizeof(buf), "gfx present init failed (%s)", gfx_present_detail());
-    log_line(buf);
-    g_gpu_ready = -1;
-  } else {
-    char buf[192];
-    snprintf(buf, sizeof(buf), "gpu-fifo backend=%s 960x544 %s", gfx_present_backend(),
-             gfx_present_detail());
-    log_line(buf);
-    g_gpu_ready = 1;
+  u32 last = 0;
+  u32 ticks = 0;
+  /* Opened once and held.
+   *
+   * The previous version opened the file per tick, and it stopped reporting
+   * before the emulated CPU stopped making progress -- which is the signature
+   * of sceIoOpen starting to fail, not of the boot dying. A handle taken at
+   * the start keeps working across that, so if the boot really is fine and the
+   * logging is what broke, this is what says so. The probe below measures it
+   * directly: a fresh open every tick, reported through the held handle. */
+  SceUID fd = sceIoOpen(WATCH_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC,
+                        0777);
+  if (fd < 0)
+    return 0;
+  while (!g_cpu_done) {
+    sceKernelDelayThread(2 * 1000 * 1000);
+    const Chassis *ch = g_watch;
+    char buf[256];
+    int n;
+    /* The emulator only flushes when its buffer fills, which during a quiet
+     * stretch can be minutes. This keeps the log at most one tick stale. */
+    log_flush();
+    if (!ch) {
+      ticks++;
+      continue;
+    }
+    u32 hits = ch->dispatch_hits;
+    n = snprintf(buf, sizeof(buf),
+                 "watchdog t=%us hits=%u (+%u) pc=0x%08x fifo=%u mmio_w=%u%s\n",
+                 ticks * 2u, hits, hits - last, ch->last_pc, ch->fifo_writes,
+                 ch->mmio_writes, hits == last ? "  STALLED" : "");
+    sceIoWrite(fd, buf, (SceSize)(n > 0 ? n : 0));
+    last = hits;
+    ticks++;
   }
-  unsigned frames = 0;
-  while (!g_cpu_done || frames < 60) {
-    gfx_present_frame();
-    frames++;
-  }
-  {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "gpu-fifo frames=%u", frames);
-    log_line(buf);
-  }
+  sceIoClose(fd);
   return 0;
 }
 
@@ -203,8 +294,9 @@ static int audio_worker(SceSize args, void *argp) {
   return 0;
 }
 
-static SceUID spawn(const char *name, SceKernelThreadEntry entry, int affinity) {
-  SceUID tid = sceKernelCreateThread(name, entry, 0x40, 0x40000, 0, affinity, NULL);
+static SceUID spawn_sized(const char *name, SceKernelThreadEntry entry,
+                          int affinity, int stack) {
+  SceUID tid = sceKernelCreateThread(name, entry, 0x40, stack, 0, affinity, NULL);
   if (tid < 0) {
     char buf[96];
     snprintf(buf, sizeof(buf), "create %s failed: 0x%08x", name, (unsigned)tid);
@@ -213,6 +305,10 @@ static SceUID spawn(const char *name, SceKernelThreadEntry entry, int affinity) 
   }
   sceKernelStartThread(tid, 0, NULL);
   return tid;
+}
+
+static SceUID spawn(const char *name, SceKernelThreadEntry entry, int affinity) {
+  return spawn_sized(name, entry, affinity, 0x40000);
 }
 
 static void log_fifo(const Chassis *ch) {
@@ -240,18 +336,32 @@ static void log_fifo(const Chassis *ch) {
   }
 }
 
-static void run_aot(void) {
+/* Runs on its own thread, and the stack size is the point.
+ *
+ * The AOT translation turns a guest call into a host call, capped at
+ * DOLRECOMP_C_MAX_CALL_DEPTH (24) frames of generated chunk code -- and a chunk
+ * frame is not small. On the host that lands in an 8 MB stack and is invisible.
+ * The Vita's main thread has a fraction of that, and overflowing it took the
+ * whole process down without a core dump: every thread stopped at once, about
+ * fifteen seconds in, at the point the boot first nests deeply. Eight
+ * megabytes here matches what the host has always had. */
+#define AOT_STACK (8 * 1024 * 1024)
+
+static int run_aot(SceSize args, void *argp) {
+  (void)args;
+  (void)argp;
   pin_self(AFFINITY_CPU0, "cpu-aot");
   if (!g_mem1 || !g_mem2) {
     log_line("guest RAM alloc failed");
-    return;
+    return 0;
   }
 
   static Chassis ch;
+  char buf[280];
   if (!chassis_init(&ch, g_mem1, GC_MAIN_RAM_SIZE, g_mem2, WII_MEM2_SIZE,
                     chassis_log, NULL)) {
     log_line("chassis_init failed");
-    return;
+    return 0;
   }
   /* Not fatal on its own: the log says which tree is missing, and the boot gets
    * as far as the first disc read before it stalls. */
@@ -259,13 +369,55 @@ static void run_aot(void) {
     log_line("media incomplete: need " GAME_ROOT " and " NAND_ROOT);
   if (!chassis_load_dol(&ch, DOL_PATH)) {
     log_line("need ux0:data/galaxyvita/sys/main.dol (user DOL, not in VPK)");
-    return;
+    return 0;
   }
 
+  /* Graphics come up after the DOL is loaded and before the first block runs,
+   * because the sink reads the live register file and the register file
+   * belongs to the chassis. A failure here is logged and stepped over: the
+   * boot is still worth running without a picture, and the log says why there
+   * is not one. */
+  {
+    SceIoStat st;
+    memset(&st, 0, sizeof(st));
+    if (sceIoGetstat(NOGFX_FLAG, &st) >= 0) {
+      log_line("gfx disabled by " NOGFX_FLAG);
+      goto no_gfx;
+    }
+  }
+  if (!gxm_init()) {
+    snprintf(buf, sizeof(buf), "gxm init failed: %s", gxm_error());
+    log_line(buf);
+  } else {
+    if (!gvsc_init(GXP_DIR)) {
+      snprintf(buf, sizeof(buf), "shader cache: %s", gvsc_last_error());
+      log_line(buf);
+    }
+    if (!gx_gxm_init(gx_cp_regs(ch.gx))) {
+      snprintf(buf, sizeof(buf), "gx backend failed: %s", gx_gxm_error());
+      log_line(buf);
+    } else {
+      GxSink sink;
+      unsigned compiled = 0, cached = 0, bad = 0;
+      /* Every 16th of the first frames, which is enough to see the boot
+       * sequence change without filling ux0: -- each frame is 2 MB. */
+      gx_gxm_dump_frames(FRAME_DIR, 8, 16);
+      gx_gxm_sink(&sink);
+      gx_cp_set_sink(ch.gx, &sink);
+      g_gfx_ready = 1;
+      gvsc_stats(&compiled, &cached, &bad);
+      snprintf(buf, sizeof(buf),
+               "gxm up %ux%u shaders compiled=%u cached=%u failed=%u",
+               gxm_width(), gxm_height(), compiled, cached, bad);
+      log_line(buf);
+    }
+  }
+
+no_gfx:
+  g_watch = &ch;
   chassis_set_input_fn(&ch, vita_pad, NULL);
   chassis_run(&ch, BLOCK_CAP);
 
-  char buf[280];
   snprintf(buf, sizeof(buf),
            "stop=%s hits=%u misses=%u fifo=%u ea=0x%08x pc=0x%08x "
            "mmio_r=%u mmio_w=%u smc=%u last=0x%08x",
@@ -274,7 +426,15 @@ static void run_aot(void) {
            ch.smc_hits, ch.last_pc);
   log_line(buf);
   log_fifo(&ch);
+  if (g_gfx_ready) {
+    gx_gxm_report(buf, sizeof(buf));
+    log_line(buf);
+    gx_gxm_shutdown();
+  }
+  gvsc_shutdown();
+  gxm_shutdown();
   chassis_shutdown(&ch);
+  return 0;
 }
 
 int main(void) {
@@ -292,20 +452,21 @@ int main(void) {
   g_mem1 = vita_rw("gv-mem1", GC_MAIN_RAM_SIZE, &g_mem1_uid);
   g_mem2 = vita_rw("gv-mem2", WII_MEM2_SIZE, &g_mem2_uid);
 
-  spawn("gpu-fifo", gpu_worker, AFFINITY_CPU1);
   spawn("audio-io", audio_worker, AFFINITY_CPU2);
+  spawn("watchdog", watchdog, AFFINITY_CPU2);
 
-  int waits = 0;
-  while (g_gpu_ready == 0 && waits < 100) {
-    sceKernelDelayThread(100 * 1000);
-    waits++;
+  {
+    SceUID cpu = spawn_sized("cpu-aot", run_aot, AFFINITY_CPU0, AOT_STACK);
+    if (cpu >= 0)
+      sceKernelWaitThreadEnd(cpu, NULL, NULL);
+    else
+      log_line("could not create the AOT thread");
   }
-
-  run_aot();
   g_cpu_done = 1;
   sceKernelDelayThread(1500 * 1000);
 
   log_line("GalaxyVita phase4 exit");
+  log_flush();
   sceKernelExitProcess(0);
   return 0;
 }

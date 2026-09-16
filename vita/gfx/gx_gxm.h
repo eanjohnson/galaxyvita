@@ -27,6 +27,15 @@ void gx_gxm_shutdown(void);
 /* Fills in the sink to hand to gx_cp_set_sink(). */
 void gx_gxm_sink(GxSink *out);
 
+/* Writes the first `count` presented frames, one in every `stride`, to
+ * <dir>/frame_NNNN.raw as tight 960x544 RGBA.
+ *
+ * This is the only way to check what the console actually drew: there is no
+ * frame capture on the device and no way to read the screen except through the
+ * display buffer the GPU just wrote. The host rasteriser dumps the same frames
+ * as PNGs, so the two can be put side by side. Off unless this is called. */
+void gx_gxm_dump_frames(const char *dir, unsigned count, unsigned stride);
+
 const char *gx_gxm_error(void);
 
 /* One line for the boot log: frames presented, draws, vertices, and what was

@@ -3,7 +3,10 @@
 #include "gxm.h"
 #include "shader_cache.h"
 
+#include <psp2/io/fcntl.h>
+#include <psp2/io/stat.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* XF register file addresses, the same two the host rasteriser reads. */
@@ -102,6 +105,10 @@ typedef struct {
 
   unsigned frames, draws, verts, scenes;
   unsigned dropped_full, dropped_nomatrix, dropped_novp, dropped_unsupported;
+
+  char dump_dir[128];
+  unsigned dump_count, dump_stride, dumped;
+  unsigned char *dump_buf;
 } GxGxm;
 
 static GxGxm g;
@@ -517,6 +524,38 @@ static void on_prim_end(void *user) {
   g.verts += g.prim_count;
 }
 
+static void dump_frame(void) {
+  char path[192];
+  SceUID fd;
+  if (!g.dump_dir[0] || g.dumped >= g.dump_count)
+    return;
+  if (g.dump_stride && (g.frames % g.dump_stride) != 0u)
+    return;
+  if (!g.dump_buf) {
+    g.dump_buf = (unsigned char *)malloc((size_t)gxm_width() * gxm_height() * 4u);
+    if (!g.dump_buf) {
+      g.dump_dir[0] = '\0';
+      return;
+    }
+  }
+  if (!gxm_capture(g.dump_buf))
+    return;
+  snprintf(path, sizeof(path), "%s/frame_%04u.raw", g.dump_dir, g.frames);
+  fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+  if (fd < 0)
+    return;
+  sceIoWrite(fd, g.dump_buf, (SceSize)(gxm_width() * gxm_height() * 4u));
+  sceIoClose(fd);
+  g.dumped++;
+}
+
+void gx_gxm_dump_frames(const char *dir, unsigned count, unsigned stride) {
+  snprintf(g.dump_dir, sizeof(g.dump_dir), "%s", dir);
+  sceIoMkdir(g.dump_dir, 0777);
+  g.dump_count = count;
+  g.dump_stride = stride ? stride : 1u;
+}
+
 static void present(void) {
   if (!g.in_scene)
     return;
@@ -527,6 +566,7 @@ static void present(void) {
    * "the GPU was still reading that" bug from the bring-up. */
   gxm_finish();
   g.in_scene = 0;
+  dump_frame();
   g.frames++;
 }
 
@@ -573,8 +613,9 @@ const char *gx_gxm_error(void) { return g_error; }
 void gx_gxm_report(char *out, unsigned n) {
   snprintf(out, n,
            "gxm frames=%u scenes=%u draws=%u vtx=%u drop_full=%u "
-           "drop_nomtx=%u drop_novp=%u drop_prim=%u scale=%.3f copy=%ux%u",
+           "drop_nomtx=%u drop_novp=%u drop_prim=%u scale=%.3f copy=%ux%u "
+           "dumped=%u",
            g.frames, g.scenes, g.draws, g.verts, g.dropped_full,
            g.dropped_nomatrix, g.dropped_novp, g.dropped_unsupported,
-           (double)g.scale, g.copy_w, g.copy_h);
+           (double)g.scale, g.copy_w, g.copy_h, g.dumped);
 }
