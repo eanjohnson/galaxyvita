@@ -21,12 +21,14 @@
     },
     "third_party/ModernGekko": {
       "url": "https://github.com/ExpansionPak/ModernGekko.git",
-      "revision": null
+      "revision": "5417826c31187d4dadf8588c7aa25bf107782936"
     },
     "third_party/RecompCore": {
       "url": "https://github.com/ExpansionPak/RecompCore.git",
-      "revision": null,
-      "comment": "Prefer the revision ModernGekko vendors; do not mix graphs."
+      "path": "third_party/ModernGekko/vendor/dolphin",
+      "revision": "55c7b023fa0f4eba1cf3fdbbb25b1c5ec468d5ac",
+      "branch": "moderngekko-vendor",
+      "comment": "Vendored by ModernGekko. Do not clone a second graph at third_party/RecompCore. Nested Dolphin Externals (Qt, FFmpeg-bin, …) are not checked out."
     }
   }
 }

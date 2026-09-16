@@ -1,0 +1,65 @@
+diff --git a/include/moderngekko/address_space.hpp b/include/moderngekko/address_space.hpp
+index 0de3767..a04ef79 100644
+--- a/include/moderngekko/address_space.hpp
++++ b/include/moderngekko/address_space.hpp
+@@ -17,6 +17,11 @@ public:
+ 
+   explicit AddressSpace(bool enable_mem2 = false);
+   AddressSpace(std::size_t mem1_size, std::size_t mem2_size);
++  /* Adopts memory owned by the caller. Needed where the guest RAM cannot come
++   * from the heap -- the PS Vita port maps its 24 MB MEM1 and 64 MB MEM2 with
++   * sceKernelAllocMemBlock, and routing them through a std::vector would move
++   * 88 MB onto the newlib heap. The spans must outlive the AddressSpace. */
++  AddressSpace(std::span<std::uint8_t> mem1, std::span<std::uint8_t> mem2);
+ 
+   std::span<std::uint8_t> GetMem1();
+   std::span<const std::uint8_t> GetMem1() const;
+@@ -39,7 +44,11 @@ public:
+   void Clear();
+ 
+ private:
+-  std::vector<std::uint8_t> m_mem1;
+-  std::vector<std::uint8_t> m_mem2;
++  /* Populated only when this AddressSpace owns its memory; the spans below are
++   * what every access goes through, so both modes share one code path. */
++  std::vector<std::uint8_t> m_owned_mem1;
++  std::vector<std::uint8_t> m_owned_mem2;
++  std::span<std::uint8_t> m_mem1;
++  std::span<std::uint8_t> m_mem2;
+ };
+ }
+diff --git a/src/memory/address_space.cpp b/src/memory/address_space.cpp
+index e81941a..ffa0273 100644
+--- a/src/memory/address_space.cpp
++++ b/src/memory/address_space.cpp
+@@ -31,7 +31,13 @@ AddressSpace::AddressSpace(bool enable_mem2)
+ }
+ 
+ AddressSpace::AddressSpace(std::size_t mem1_size, std::size_t mem2_size)
+-    : m_mem1(mem1_size), m_mem2(mem2_size)
++    : m_owned_mem1(mem1_size), m_owned_mem2(mem2_size), m_mem1(m_owned_mem1),
++      m_mem2(m_owned_mem2)
++{
++}
++
++AddressSpace::AddressSpace(std::span<std::uint8_t> mem1, std::span<std::uint8_t> mem2)
++    : m_mem1(mem1), m_mem2(mem2)
+ {
+ }
+ 
+diff --git a/vendor/dolphin_legacy/VideoCommon/DriverDetails.cpp b/vendor/dolphin_legacy/VideoCommon/DriverDetails.cpp
+index b657d77..05c9e0c 100644
+--- a/vendor/dolphin_legacy/VideoCommon/DriverDetails.cpp
++++ b/vendor/dolphin_legacy/VideoCommon/DriverDetails.cpp
+@@ -43,6 +43,11 @@ constexpr u32 m_os = OS_ALL | OS_OPENBSD;
+ constexpr u32 m_os = OS_ALL | OS_NETBSD;
+ #elif __HAIKU__
+ constexpr u32 m_os = OS_ALL | OS_HAIKU;
++#else
++// Platforms with no entry in the table above -- the PS Vita among them. Every
++// bug in the list is keyed to a desktop or mobile driver, so none of them can
++// apply here; OS_ALL selects exactly the OS-agnostic ones.
++constexpr u32 m_os = OS_ALL;
+ #endif
+ 
+ static API m_api = API_OPENGL;

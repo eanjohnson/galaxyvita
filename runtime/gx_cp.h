@@ -1,0 +1,85 @@
+#ifndef GALAXYVITA_GX_CP_H
+#define GALAXYVITA_GX_CP_H
+
+#include "common/types.h"
+#include "gx_render.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+enum {
+  /* XF is sparse to 0x105F; a flat array that size costs 16 KB and removes
+   * every range check from the read path. */
+  GX_XF_WORDS = 0x1060u
+};
+
+/* The register files the stream has written, in the shape a renderer wants to
+ * read them. This is the whole of what the software rasteriser needs to know
+ * about the command processor, and it is also what Dolphin's shader generators
+ * are driven from -- they take a CP/XF/BP view and nothing else. */
+/* Resolves a physical guest address to host bytes, or NULL if `len` bytes are
+ * not contiguously available. Textures live in guest RAM and are referenced by
+ * address out of BP, so a renderer needs this as much as it needs the
+ * registers. */
+typedef const u8 *(*GxMemFn)(void *user, u32 phys, u32 len);
+
+typedef struct GxRegs {
+  GxMemFn mem_fn;
+  void *mem_user;
+  u32 bp[256];
+  u32 xf[GX_XF_WORDS];
+  u32 vcd_low;
+  u32 vcd_high;
+  u32 vat[8][3];
+} GxRegs;
+
+/* Command processor. Wraps ModernGekko's GxCommandProcessor and GxStateBackend:
+ * the FIFO parse, display-list following, indexed-attribute fetch and vertex
+ * decode are all theirs, and this is the C face the runtime talks to. */
+typedef struct GxCp GxCp;
+
+/* mem1/mem2 stay owned by the caller -- on the Vita they are memblocks, not
+ * heap -- and must outlive the returned object. */
+GxCp *gx_cp_create(void *mem1, u32 mem1_size, void *mem2, u32 mem2_size);
+void gx_cp_destroy(GxCp *cp);
+void gx_cp_reset(GxCp *cp);
+
+void gx_cp_write(GxCp *cp, u64 value, u8 size);
+void gx_cp_set_sink(GxCp *cp, const GxSink *sink);
+const GxRegs *gx_cp_regs(const GxCp *cp);
+
+u32 gx_cp_pending(const GxCp *cp);
+u64 gx_cp_commands(const GxCp *cp);
+u64 gx_cp_unknown(const GxCp *cp);
+u64 gx_cp_vertices(const GxCp *cp);
+u64 gx_cp_draws(const GxCp *cp);
+u64 gx_cp_bytes_in(const GxCp *cp);
+
+/* Pixel Engine events the Flipper turns into interrupts. BP 0x45 is
+ * SETDRAWDONE (GXDrawDone); 0x47 and 0x48 record a draw-sync token, and 0x48
+ * also asks for an interrupt. Each take() clears what it reports. */
+int gx_cp_take_finish(GxCp *cp);
+int gx_cp_take_token_irq(GxCp *cp);
+int gx_cp_take_token(GxCp *cp, u32 *token);
+
+/* Diagnostic: record the raw bytes fed to the processor so a hang can be
+ * replayed off-line instead of waiting out a 20-minute boot. */
+u64 gx_cp_display_lists(const GxCp *cp);
+u64 gx_cp_display_list_bytes(const GxCp *cp);
+u64 gx_cp_display_lists_unresolved(const GxCp *cp);
+u64 gx_cp_undecoded(const GxCp *cp);
+
+/* Command-stream capture, kept deliberately rather than deleted after the
+ * first bug it found. Off unless GV_GX_TRACE names a file; records the first
+ * 1 MiB of bytes written to the write-gather FIFO, in wire order, and the
+ * chassis flushes it on SIGINT/SIGTERM so a hung run still yields its stream.
+ * Decoding that capture is what located the opcode the CP was stuck on. */
+void gx_cp_trace(GxCp *cp, const char *path);
+void gx_cp_trace_flush(GxCp *cp);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
