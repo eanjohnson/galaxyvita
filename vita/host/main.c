@@ -103,6 +103,21 @@ static void log_flush(void) {
     sceKernelUnlockMutex(g_log_mtx, 1);
 }
 
+/* Flush only if the lock is free. The watchdog must never block on the thread
+ * it is watching: if the emulator is wedged inside log_flush_locked() holding
+ * the mutex, a blocking flush here takes the watchdog down with it and the
+ * symptom becomes "no watchdog output", which is indistinguishable from a dead
+ * process. Returns 0 when the lock was busy, which is itself a diagnosis. */
+static int log_try_flush(void) {
+  if (g_log_mtx < 0)
+    return 1;
+  if (sceKernelTryLockMutex(g_log_mtx, 1) < 0)
+    return 0;
+  log_flush_locked();
+  sceKernelUnlockMutex(g_log_mtx, 1);
+  return 1;
+}
+
 static void log_line(const char *msg) {
   size_t n = strlen(msg);
   if (g_log_mtx >= 0)
@@ -247,6 +262,7 @@ static int watchdog(SceSize args, void *argp) {
   (void)argp;
   u32 last = 0;
   u32 ticks = 0;
+  int log_stuck = 0;
   /* Opened once and held.
    *
    * The previous version opened the file per tick, and it stopped reporting
@@ -264,19 +280,35 @@ static int watchdog(SceSize args, void *argp) {
     const Chassis *ch = g_watch;
     char buf[256];
     int n;
-    /* The emulator only flushes when its buffer fills, which during a quiet
-     * stretch can be minutes. This keeps the log at most one tick stale. */
-    log_flush();
     if (!ch) {
       ticks++;
       continue;
     }
+    /* This line goes out first, through this thread's own handle, before
+     * anything that could block. Whatever else is stuck, the tick is reported. */
     u32 hits = ch->dispatch_hits;
     n = snprintf(buf, sizeof(buf),
-                 "watchdog t=%us hits=%u (+%u) pc=0x%08x fifo=%u mmio_w=%u%s\n",
+                 "watchdog t=%us hits=%u (+%u) pc=0x%08x fifo=%u mmio_w=%u%s%s\n",
                  ticks * 2u, hits, hits - last, ch->last_pc, ch->fifo_writes,
-                 ch->mmio_writes, hits == last ? "  STALLED" : "");
-    sceIoWrite(fd, buf, (SceSize)(n > 0 ? n : 0));
+                 ch->mmio_writes, hits == last ? "  STALLED" : "",
+                 log_stuck ? "  LOGLOCKED" : "");
+    int wrote = sceIoWrite(fd, buf, (SceSize)(n > 0 ? n : 0));
+    /* A held handle buffers: without this the last ticks before a wedge sit in
+     * the cache and never reach the card, which reads from the host exactly
+     * like a thread that stopped running. The whole point of this thread is to
+     * be believed about that distinction, so pay for the sync. */
+    sceIoSyncByFd(fd, 0);
+    if (wrote < 0) {
+      /* The handle went bad. Reopening costs a tick and keeps the log alive. */
+      sceIoClose(fd);
+      fd = sceIoOpen(WATCH_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
+      if (fd < 0)
+        return 0;
+    }
+    /* The emulator only flushes when its buffer fills, which during a quiet
+     * stretch can be minutes. This keeps the log at most one tick stale -- but
+     * never at the cost of this thread. */
+    log_stuck = !log_try_flush();
     last = hits;
     ticks++;
   }

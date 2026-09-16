@@ -103,15 +103,16 @@ int main(int argc, char **argv) {
       ch.census_from = (u32)strtoul(from, NULL, 10);
   }
   {
-    /* GV_TRACE=lo:hi[:max] logs every block entry inside an address window --
-     * the only practical way to watch one library's state machine run. */
+    /* GV_TRACE=lo:hi[:max[:from]] logs every block entry inside an address
+     * window, optionally only from block `from` on -- the only practical way
+     * to watch one library's state machine run. */
     const char *tr = getenv("GV_TRACE");
     if (tr) {
       char *end = NULL;
       ch.trace_lo = (u32)strtoul(tr, &end, 16);
       ch.trace_hi = end && *end == ':' ? (u32)strtoul(end + 1, &end, 16) : 0u;
-      ch.trace_left =
-          end && *end == ':' ? (u32)strtoul(end + 1, NULL, 10) : 4000u;
+      ch.trace_left = end && *end == ':' ? (u32)strtoul(end + 1, &end, 10) : 4000u;
+      ch.trace_from = end && *end == ':' ? (u32)strtoul(end + 1, NULL, 10) : 0u;
     }
   }
   static TestPad pad;

@@ -47,6 +47,8 @@ typedef struct Chassis {
   u32 trace_lo;
   u32 trace_hi;
   u32 trace_left;
+  /* Block number the window opens at, so a trace can start past the boot. */
+  u32 trace_from;
   u32 hle_calls;
   /* CPU cycles not yet credited to the timebase. */
   u32 tb_frac;
