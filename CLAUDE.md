@@ -43,4 +43,13 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
 - `-Wl,-q` is mandatory for hand-linked VitaSDK binaries. `vita-elf-create`
   accepts an ELF with no relocations silently and the result jumps into padding.
 - ShaccCg wedges after 5-9 compiles in one process regardless of content. The
-  shader cache warmer must batch-and-resume across launches.
+  shader cache warmer must batch-and-resume across launches. It also needs an
+  **unsafe** fself: as a safe self it loads and then fails every compile.
+- `vita-elf-create` appends ~1.8 KB of SCE data at the end of the read-only
+  segment and aborts when that segment ends within 1.8 KB of a page boundary.
+  Where it ends is arbitrary, so ~half of all builds fail for a reason
+  unrelated to the change. `scripts/build-vita.sh` pads and retries; do not
+  "fix" a failing build by reverting the change that happened to trip it.
+- The Vita does not need the whole 3.2 GB extraction. The boot touches 25 MB of
+  it; `GV_DISC_CENSUS` records exactly which files, and
+  `scripts/stage-media-vita.sh` sends only those.
