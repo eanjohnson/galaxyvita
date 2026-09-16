@@ -28,6 +28,11 @@ typedef struct Flipper {
   u32 si[16];
   u32 exi[16];
   u32 ai[4];
+  /* AISCNT is not a register the CPU writes: it free-runs at the selected
+   * sample rate whenever PSTAT is set. AIInit times it against the timebase to
+   * work out the DSP clock, so it has to advance or the boot spins there. */
+  u64 ai_acc;
+  u32 ai_count;
   u32 ipc_ppcmsg;
   u32 ipc_armmsg;
   u32 ipc_ctrl;

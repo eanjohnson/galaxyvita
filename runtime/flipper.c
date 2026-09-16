@@ -20,7 +20,23 @@
 #define IPC_CTRL_IY2 0x20u
 #define PI_CAUSE_PE_TOKEN 0x200u
 #define PI_CAUSE_PE_FINISH 0x400u
+#define PI_CAUSE_AI 0x20u
 #define DSP_INT 0x80u
+
+/* Audio Interface, 0xCD006C00. Four registers: control, volume, the free-
+ * running sample counter and the counter value the interrupt fires at. */
+#define AI_CR 0u
+#define AI_SCNT 2u
+#define AI_IT 3u
+#define AICR_PSTAT 0x0001u    /* sample counter runs */
+#define AICR_AFR 0x0002u      /* 0 = 32 kHz, 1 = 48 kHz */
+#define AICR_AIINTMSK 0x0004u
+#define AICR_AIINT 0x0008u    /* write one to clear */
+#define AICR_AIINTVLD 0x0010u
+#define AICR_SCRESET 0x0020u  /* a command, not a bit: never reads back set */
+/* The counter is in sample-rate units and the chassis counts Broadway cycles,
+ * so the conversion runs through the core clock. */
+#define AI_CPU_HZ 729000000u
 
 #define VI_VCOUNT_OFF 0x2Cu
 #define VI_HCOUNT_OFF 0x2Eu
@@ -300,6 +316,35 @@ void flipper_init(Flipper *f) {
 }
 
 
+/* The sample-counter interrupt is the one AIRegisterStreamCallback uses. The
+ * status bit latches on its own and the mask only gates delivery, so both are
+ * re-derived here rather than assumed at the point either one moves. */
+static void sync_ai_irq(Flipper *f) {
+  if ((f->ai[AI_CR] & AICR_AIINT) && (f->ai[AI_CR] & AICR_AIINTMSK))
+    f->pi_cause |= PI_CAUSE_AI;
+  else
+    f->pi_cause &= ~PI_CAUSE_AI;
+}
+
+static void ai_advance(Flipper *f, u64 cycles) {
+  if (!(f->ai[AI_CR] & AICR_PSTAT))
+    return;
+  u32 rate = (f->ai[AI_CR] & AICR_AFR) ? 48000u : 32000u;
+  f->ai_acc += cycles * rate;
+  u32 ticks = (u32)(f->ai_acc / AI_CPU_HZ);
+  if (!ticks)
+    return;
+  f->ai_acc -= (u64)ticks * AI_CPU_HZ;
+  u32 before = f->ai_count;
+  f->ai_count += ticks;
+  /* AIIT is a one-shot: the interrupt fires on the crossing, not while the
+   * counter is past it. A zero AIIT is the SDK's "no callback" state. */
+  if (f->ai[AI_IT] && before < f->ai[AI_IT] && f->ai_count >= f->ai[AI_IT]) {
+    f->ai[AI_CR] |= AICR_AIINT;
+    sync_ai_irq(f);
+  }
+}
+
 static void sync_vi_irq(Flipper *f) {
   u16 di0 = f->vi[VI_DI0_OFF / 2];
   int status = (di0 & 0x8000u) != 0;
@@ -312,6 +357,7 @@ static void sync_vi_irq(Flipper *f) {
 
 void flipper_advance(Flipper *f, u64 cycles) {
   f->cycles += cycles;
+  ai_advance(f, cycles);
   f->line_acc += cycles;
   u64 lines = f->line_acc / VI_CYCLES_PER_LINE;
   f->line_acc -= lines * VI_CYCLES_PER_LINE;
@@ -474,8 +520,12 @@ static u64 read_flipper(Flipper *f, u32 off, u8 size) {
     return load_u32_file(f->si, 16, off - 0x6400u, size);
   if (off >= 0x6800u && off < 0x6840u)
     return load_u32_file(f->exi, 16, off - 0x6800u, size);
-  if (off >= 0x6C00u && off < 0x6C10u)
+  if (off >= 0x6C00u && off < 0x6C10u) {
+    /* AISCNT has no storage of its own; publish the free-running value so a
+     * byte or halfword read of it is extracted the same way as any other. */
+    f->ai[AI_SCNT] = f->ai_count;
     return load_u32_file(f->ai, 4, off - 0x6C00u, size);
+  }
   return 0;
 }
 
@@ -587,8 +637,31 @@ static void write_flipper(Flipper *f, CPUState *cpu, GxCp *gx, u32 off,
     }
     return;
   }
-  if (off >= 0x6C00u && off < 0x6C10u)
-    store_u32_file(f->ai, 4, off - 0x6C00u, size, value);
+  if (off >= 0x6C00u && off < 0x6C10u) {
+    u32 aoff = off - 0x6C00u;
+    u32 before = f->ai[AI_CR];
+    store_u32_file(f->ai, 4, aoff, size, value);
+    if (aoff >= 4u)
+      return;
+    u32 cr = f->ai[AI_CR];
+    if (cr & AICR_SCRESET) {
+      f->ai_count = 0;
+      f->ai_acc = 0;
+      cr &= ~AICR_SCRESET;
+    }
+    /* Writing one to AIINT acknowledges it; writing zero leaves it latched. */
+    if (cr & AICR_AIINT)
+      cr &= ~AICR_AIINT;
+    else
+      cr |= before & AICR_AIINT;
+    /* Starting the counter or changing its rate restarts the fraction, so a
+     * partial sample carried over from the old rate cannot skew the first
+     * tick -- which is exactly the tick AIInit is timing. */
+    if ((cr ^ before) & (AICR_PSTAT | AICR_AFR))
+      f->ai_acc = 0;
+    f->ai[AI_CR] = cr;
+    sync_ai_irq(f);
+  }
 }
 
 static u64 read_hollywood(Flipper *f, u32 off, u8 size) {

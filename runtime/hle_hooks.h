@@ -15,7 +15,6 @@
  * build of the game. */
 #define GALAXYVITA_HLE_HOOKS(X)                                                \
   X(0x804EFB1Cu, hle_wud_is_ready, "WUDIsLinkedWBC")                           \
-  X(0x804C824Cu, hle_ai_src_init, "__AI_SRC_INIT")                             \
   X(0x803ACA54u, hle_hbm_load_module, "HomeButtonMenu::loadModule")            \
   X(0x803ACB88u, hle_hbm_void, "HBMCreateRSO")                                 \
   X(0x803ACB94u, hle_hbm_void, "HBMInitRSO")                                   \

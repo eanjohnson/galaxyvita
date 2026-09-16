@@ -81,17 +81,6 @@ typedef void (*HleFn)(Chassis *ch);
  * leaves 0, so the wait never ends; report the stack as up. */
 static void hle_wud_is_ready(Chassis *ch) { ch->cpu.gpr[3] = 1u; }
 
-/* __AI_SRC_INIT() -- AIInit's audio-clock probe. It toggles AICR's rate bit,
- * times one tick of the AI sample counter against OSGetTime, and retries
- * forever until the gap lands in the 32 kHz or 48 kHz window measured on real
- * silicon; it then sleeps out a calibrated settling delay and returns. Nothing
- * else in the SDK reads what it computes. The chassis advances the timebase a
- * whole dispatch slice at a time, so the gap it would measure here is quantised
- * far coarser than those windows -- and a Vita has no Flipper clock to identify
- * in the first place. Skip the probe; the sample counter itself lands with the
- * audio work. */
-static void hle_ai_src_init(Chassis *ch) { (void)ch; }
-
 /* The Home Button menu. SMG keeps it out of main.dol: the function at
  * 0x803ACA54 loads /ModuleData/HomeButtonMenuWrapperRSO.rso into MEM2, runs the
  * module's prolog, and resolves seven HBM*RSO exports into globals that the
@@ -1215,7 +1204,8 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
               ch->ios.ioctls, ch->ios.replies);
       return 1;
     }
-    if (ch->trace_left && pc >= ch->trace_lo && pc < ch->trace_hi) {
+    if (ch->trace_left && blocks >= ch->trace_from && pc >= ch->trace_lo &&
+        pc < ch->trace_hi) {
       ch->trace_left--;
       ch_logf(ch, "trace 0x%08x lr=0x%08x blocks=%u", pc, ch->cpu.lr, blocks);
     }
