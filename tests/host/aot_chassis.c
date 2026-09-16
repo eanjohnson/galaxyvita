@@ -93,6 +93,9 @@ int main(int argc, char **argv) {
     const char *n = getenv("GV_BT_LOG");
     if (n)
       chassis_set_bt_log(&ch, (u32)strtoul(n, NULL, 10));
+    const char *r = getenv("GV_BT_REPORTS");
+    if (r)
+      ch.ios.bt.log_reports = (u32)strtoul(r, NULL, 10);
   }
   {
     const char *from = getenv("GV_CENSUS_FROM");

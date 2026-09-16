@@ -1,5 +1,7 @@
 #include "bt.h"
 
+#include <stdio.h>
+
 #include <string.h>
 
 /* HCI is little endian throughout; the Wii Remote's own HID payloads are big
@@ -706,10 +708,13 @@ static void fill_ir(Bt *bt, u8 *p, u32 n, int extended) {
     p[1] = (u8)y;
     p[2] = (u8)(((y >> 8) << 6) | ((x >> 8) << 4) | 3u);
   } else {
-    /* Two objects per five bytes, sharing one byte of high bits. */
+    /* Two objects per five bytes, sharing one byte of high bits. That byte is
+     * packed LSB-first as x2hi, y2hi, x1hi, y1hi (Dolphin's IRBasic in
+     * WiimoteEmu/Camera.h), so object 1 lives in the HIGH nibble. The low
+     * nibble stays all-ones, which is object 2 reading as absent. */
     p[0] = (u8)x;
     p[1] = (u8)y;
-    p[2] = (u8)(0xF0u | ((y >> 8) << 2) | (x >> 8));
+    p[2] = (u8)(((y >> 8) << 6) | ((x >> 8) << 4) | 0x0Fu);
   }
 }
 
@@ -736,7 +741,7 @@ static void send_input_report(Bt *bt) {
   memset(p, 0, sizeof(p));
   p[0] = 0xA1u; /* HID DATA, input */
   p[1] = mode;
-  wr16be(p + 2, bt->input.buttons);
+  wr16le(p + 2, bt->input.buttons);
   u8 *body = p + 4;
   switch (mode) {
   case 0x31u:
@@ -768,6 +773,15 @@ static void send_input_report(Bt *bt) {
   default:
     break;
   }
+  /* First few reports on the wire, so the button byte order and IR packing can
+   * be checked against what the game actually receives rather than inferred. */
+  if (bt->log_reports) {
+    bt->log_reports--;
+    fprintf(stderr, "bt report:");
+    for (u32 i = 0; i < 2u + n; i++)
+      fprintf(stderr, " %02x", p[i]);
+    fprintf(stderr, "  (buttons=0x%04x)\n", bt->input.buttons);
+  }
   acl_send(bt, bt->cid_intr_host, p, 2u + n);
   bt->reports++;
 }
@@ -778,7 +792,7 @@ static void send_ack(Bt *bt, u8 report_id, u8 error) {
   u8 p[6];
   p[0] = 0xA1u;
   p[1] = 0x22u;
-  wr16be(p + 2, bt->input.buttons);
+  wr16le(p + 2, bt->input.buttons);
   p[4] = report_id;
   p[5] = error;
   acl_send(bt, bt->cid_intr_host, p, 6);
@@ -790,7 +804,7 @@ static void send_status(Bt *bt) {
   u8 p[8];
   p[0] = 0xA1u;
   p[1] = 0x20u;
-  wr16be(p + 2, bt->input.buttons);
+  wr16le(p + 2, bt->input.buttons);
   p[4] = (u8)((bt->leds & 0xF0u) | (bt->ext_enabled ? 0x02u : 0u) |
               (bt->speaker_on ? 0x04u : 0u) | (bt->ir_on ? 0x08u : 0u));
   p[5] = 0;
@@ -830,7 +844,7 @@ static void send_read_data(Bt *bt, int regs, u32 off, u16 size) {
     u8 p[23];
     p[0] = 0xA1u;
     p[1] = 0x21u;
-    wr16be(p + 2, bt->input.buttons);
+    wr16le(p + 2, bt->input.buttons);
     p[4] = (u8)((chunk - 1u) << 4);
     wr16be(p + 5, (u16)off);
     memset(p + 7, 0, 16);

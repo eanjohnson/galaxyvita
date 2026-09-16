@@ -43,8 +43,12 @@ typedef struct BtQueue {
   u32 dropped;
 } BtQueue;
 
-/* Buttons in the Wii Remote's own core-report bit order, so a report is just
- * the mask byte-swapped into place. */
+/* Buttons in the Wii Remote's own core-report bit order: the D-pad and Plus
+ * occupy bits 0..4 and land in the FIRST button byte on the wire, Two/One/B/A/
+ * Minus/Home occupy bits 8..15 and land in the second. The mask is therefore
+ * written little-endian, not big-endian -- writing it big-endian swaps the two
+ * bytes, which silently reads A as D-Pad Up and the D-pad as the face buttons.
+ * Matches Dolphin's ButtonData union (WiimoteCommon/WiimoteReport.h). */
 enum {
   BT_BTN_LEFT = 0x0001u,
   BT_BTN_RIGHT = 0x0002u,
@@ -132,6 +136,7 @@ typedef struct Bt {
   u32 acl_out;
   u32 acl_in_n;
   u32 reports;
+  u32 log_reports; /* countdown: dump this many input reports to stderr */
   u32 last_out_report;
   /* The first HCI opcodes the stack sends, in order: the shape of its init
    * sequence is the quickest way to see how far it got. */
