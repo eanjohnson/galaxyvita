@@ -50,6 +50,14 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   Where it ends is arbitrary, so ~half of all builds fail for a reason
   unrelated to the change. `scripts/build-vita.sh` pads and retries; do not
   "fix" a failing build by reverting the change that happened to trip it.
+- **The Vita links prebuilt AOT objects that nothing checks.** CMake globs
+  `generated/build/aot-vita`; there is no dependency edge from an object back
+  to the chunk it came from, and `measure-aot-size.sh` skips the Vita half
+  entirely when VITASDK is missing, on stderr and nowhere else. One stale
+  object made an HLE hook unreachable on the console while every host run had
+  it, and cost two days of chasing a "host/Vita divergence" that was really
+  last week's code. `scripts/check-aot-fresh.sh` now fails the configure; if a
+  device result disagrees with a host result, suspect this first.
 - The Vita does not need the whole 3.2 GB extraction. The boot touches 25 MB of
   it; `GV_DISC_CENSUS` records exactly which files, and
   `scripts/stage-media-vita.sh` sends only those.
