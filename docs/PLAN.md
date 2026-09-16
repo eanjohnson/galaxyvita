@@ -202,8 +202,10 @@ Guest GX FIFO
   - linear / swizzled textures in CDRAM first, USER_RW uncached overflow
   - 16-bit depth + 32-bit color EFB at 1×
   - staging textures for EFB peek (color rarely, depth always for Star Pointer)
-  - precompiled GXP shader cache built on host from a desktop ModernGekko UID dump
-- No runtime compiler on the hot path if we can prewarm the SMG UID set from a host playthrough.
+  - precompiled GXP shader cache, UID set enumerated on host from a desktop
+    ModernGekko playthrough, blobs warmed on-device once via SceShaccCg (there is
+    no host GXP compiler outside Sony's SDK — see [GRAPHICS-BACKEND.md](GRAPHICS-BACKEND.md))
+- No runtime compiler on the hot path after first run.
 - Present: double-buffer, vsync on, 960×544, letterbox 4:3 or native 16:9 (game already has both; Petari `RenderMode.cpp`).
 
 **EFB / Pull Stars (non-negotiable):**

@@ -30,9 +30,9 @@ if [[ "${1:-}" == "--vpk" ]]; then
     exit 1
   fi
   wake
-  echo "Uploading $(basename "$VPK") to ux0:/download/"
-  curl -q --ftp-method nocwd -T "$VPK" "ftp://$IP:1337/ux0:/download/$(basename "$VPK")"
-  echo "Install once with VitaShell, then use ./scripts/deploy-vita.sh for eboot updates."
+  echo "Uploading $(basename "$VPK") to ux0:/vpk/"
+  curl -q --ftp-method nocwd -T "$VPK" "ftp://$IP:1337/ux0:/vpk/$(basename "$VPK")"
+  echo "Install once with VitaShell (ux0:vpk/$(basename "$VPK")), then use ./scripts/deploy-vita.sh for eboot updates."
   exit 0
 fi
 
@@ -50,7 +50,8 @@ if [[ -z "$EBOOT" ]]; then
 fi
 
 wake
-cmd "quit $TITLE" || cmd "quit all" || true
+# vitacompanion 1.06: `kill TITLEID` often fails; `destroy` quits every app.
+cmd "destroy" || true
 echo "Uploading $(basename "$EBOOT") -> ux0:/app/$TITLE/eboot.bin"
 curl -q --ftp-method nocwd -T "$EBOOT" "ftp://$IP:1337/ux0:/app/$TITLE/eboot.bin"
 cmd "launch $TITLE"

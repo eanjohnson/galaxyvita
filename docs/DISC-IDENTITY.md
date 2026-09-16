@@ -38,6 +38,14 @@ Container SHA-256 **differs** from GalaxyPad's WBFS pin `bd0d3d4bc1376a8614fd8f4
 
 This **matches** GalaxyPad's RMGE01 revision 0 DOL pin. AOT work can use the GalaxyPad DOL identity. Do not assume the rest of the filesystem matches their manifest (they counted 2386 files).
 
-HOME-menu RSO files are not yet inventoried.
+HOME-menu RSO files inventoried from `wit FILES` (paths only, not extracted):
+
+| Path | Role |
+|---|---|
+| `sys/main.dol` | Only DOL. AOT input. |
+| `files/ModuleData/HomeButtonMenuWrapperRSO.rso` | HOME-menu wrapper. **Not executed** (GalaxyPad policy; native menu replaces it). |
+| `files/ModuleData/product.sel` | HOME-menu selector. Same policy. |
+
+Zero `.rel` modules on this disc. Counts: dol=1 rel=0 rso=1 sel=1.
 
 Do not paste game bytes here.

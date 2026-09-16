@@ -1,0 +1,50 @@
+# This file is used as an alternative if ux0:tai/config.txt is not found.
+# For users plugins, you must refresh taiHEN from HENkaku Settings for
+# changes to take place.
+# For kernel plugins, you must reboot for changes to take place.
+
+*KERNEL
+# henkaku.skprx is hard-coded to load and is not listed here
+ur0:tai/0syscall6.skprx
+ur0:tai/nonpdrm.skprx
+ur0:tai/repatch.skprx
+ur0:tai/kubridge.skprx
+ur0:tai/itls.skprx
+ur0:tai/yamt_helper.skprx
+ur0:tai/NoPowerLimits.skprx
+ur0:tai/CapUnlocker.skprx
+# GalaxyVita
+ur0:tai/vitacompanion_kernel.skprx
+ur0:tai/catlog.skprx
+ur0:tai/PSVshellPlus_Kernel.skprx
+# Electry PSVshell — do not load with PSVshellPlus
+# ur0:tai/PSVshell.skprx
+
+*main
+# main is a special titleid for SceShell
+ur0:tai/henkaku.suprx
+ur0:tai/shellbat.suprx
+ur0:tai/pngshot.suprx
+ur0:tai/LowMemMode.suprx
+ux0:tai/NoTrpDrm.suprx
+# GalaxyVita
+ur0:tai/vitacompanion.suprx
+ur0:tai/PSVshellPlus_Shell.suprx
+# ux0:data/VitaDB/vdb_daemon.suprx
+
+*NPXS10015
+# this is for modifying the version string
+ur0:tai/henkaku.suprx
+ur0:tai/yamt.suprx
+# GalaxyVita — catlog settings under Settings → Network
+ur0:tai/catlog.suprx
+
+*NPXS10016
+# this is for modifying the version string in settings widget
+ur0:tai/henkaku.suprx
+
+*NPXS10004
+ur0:tai/sceShutterSoundPlayDisable.suprx
+
+# Optional, still disabled
+# ur0:tai/vitabright.skprx

@@ -66,15 +66,15 @@ Persist IP in `scripts/.vita-ip` (gitignored) or `.env.local`.
 ## First VPK install
 
 1. Build with `./scripts/build-vita.sh`
-2. `./scripts/deploy-vita.sh --vpk` copies the VPK to `ux0:/download/`
-3. Install once with VitaShell
+2. `./scripts/deploy-vita.sh --vpk` copies the VPK to `ux0:/vpk/`
+3. Install once with VitaShell (`ux0:vpk/galaxyvita.vpk`)
 4. Later updates use `./scripts/deploy-vita.sh` which only pushes `eboot.bin` and relaunches
 
 ## Hands-off commands (vitacompanion)
 
 ```
 echo 'screen on; nosleep on' | socat - TCP:$GALAXYVITA_IP:1338
-echo 'quit all; launch GVITA0001' | socat - TCP:$GALAXYVITA_IP:1338
+echo 'destroy; launch GVITA0001' | socat - TCP:$GALAXYVITA_IP:1338
 echo 'press cross; wait 100ms; release cross' | socat - TCP:$GALAXYVITA_IP:1338
 ```
 
