@@ -695,26 +695,55 @@ static u32 report_payload_len(u8 mode) {
 /* One IR "object" as the remote's extended (12-byte) format encodes it: two
  * objects of x, y and size, with the high bits of each coordinate folded into
  * the size byte. Only the first object is lit; the rest read as absent. */
+/* The sensor bar is two LEDs, so a real camera sees two objects and the game
+ * derives the pointer from their midpoint (and the roll angle from the line
+ * between them). Reporting a single object leaves the pointer undefined, which
+ * is why a pointer-driven screen ignores A no matter how often it is pressed.
+ * Dolphin models the same two LEDs in WiimoteEmu/Camera.cpp. */
+#define IR_LED_SEPARATION 128 /* camera units between the two LEDs */
+
+/* One extended-format object: x low, y low, then the high bits of each packed
+ * with the object's size. Objects left untouched keep the caller's 0xFF fill,
+ * which is how "nothing seen" reads. */
+static void put_ir_object(u8 *p, u16 x, u16 y) {
+  p[0] = (u8)x;
+  p[1] = (u8)y;
+  p[2] = (u8)(((y >> 8) << 6) | ((x >> 8) << 4) | 3u);
+}
+
 static void fill_ir(Bt *bt, u8 *p, u32 n, int extended) {
   /* An absent object reads as x = y = 0x3FF, so all-ones is "nothing seen". */
   memset(p, 0xFFu, n);
   if (bt->input.ir_x < 0 || !bt->ir_on)
     return;
-  u16 x = (u16)bt->input.ir_x;
-  u16 y = (u16)bt->input.ir_y;
+
+  s32 cx = bt->input.ir_x;
+  s32 cy = bt->input.ir_y;
+  s32 x0 = cx - IR_LED_SEPARATION / 2;
+  s32 x1 = cx + IR_LED_SEPARATION / 2;
+  if (x0 < 0) x0 = 0;
+  if (x1 > 1023) x1 = 1023;
+  if (cy < 0) cy = 0;
+  if (cy > 767) cy = 767;
+
   if (extended) {
-    /* Four objects of x, y, size, each carrying its own high bits. */
-    p[0] = (u8)x;
-    p[1] = (u8)y;
-    p[2] = (u8)(((y >> 8) << 6) | ((x >> 8) << 4) | 3u);
+    /* Four objects of three bytes each; the two LEDs are objects 1 and 2 and
+     * the rest stay absent. */
+    if (n >= 3u) put_ir_object(p, (u16)x0, (u16)cy);
+    if (n >= 6u) put_ir_object(p + 3, (u16)x1, (u16)cy);
   } else {
     /* Two objects per five bytes, sharing one byte of high bits. That byte is
      * packed LSB-first as x2hi, y2hi, x1hi, y1hi (Dolphin's IRBasic in
-     * WiimoteEmu/Camera.h), so object 1 lives in the HIGH nibble. The low
-     * nibble stays all-ones, which is object 2 reading as absent. */
-    p[0] = (u8)x;
-    p[1] = (u8)y;
-    p[2] = (u8)(((y >> 8) << 6) | ((x >> 8) << 4) | 0x0Fu);
+     * WiimoteEmu/Camera.h), so object 1 is the high nibble and object 2 the
+     * low one. */
+    if (n >= 5u) {
+      p[0] = (u8)x0;
+      p[1] = (u8)cy;
+      p[2] = (u8)(((cy >> 8) << 6) | ((x0 >> 8) << 4) |
+                  ((cy >> 8) << 2) | (x1 >> 8));
+      p[3] = (u8)x1;
+      p[4] = (u8)cy;
+    }
   }
 }
 
