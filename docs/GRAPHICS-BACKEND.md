@@ -292,3 +292,82 @@ it compiles the GLSL through glslang to SPIR-V and retargets with SPIRV-Cross
 - Dolphin's `VideoBackends/Software` (a complete CPU GX implementation —
   `Clipper`, `Rasterizer`, `Tev`, `TextureSampler`, `TransformUnit`, `EfbCopy`)
   becomes the reference for any behaviour the Vita backend gets wrong.
+
+## The backend, on hardware (2026-09-16)
+
+The decision above is now implemented and verified on the console. Four files,
+about 1,400 lines:
+
+| File | What it is |
+| --- | --- |
+| `vita/gfx/gxm.c` | the raw sceGxm device: context, ring buffers, render target, 960x544 double-buffered display queue, CDRAM/LPDDR allocation, `gxm_capture` for readback |
+| `vita/gfx/shader_cache.c` | Cg -> GXP on-device, keyed by name, persisted to `ux0:data/galaxyvita/gxp` |
+| `vita/gfx/gx_gxm.c` | the `GxSink` -> GXM bridge: GX transform, viewport, topology, clear, present |
+| `vita/gfx/gxm_selftest.c` | the hardware test that proves the above |
+
+### What the console actually does
+
+`scripts/gxm-selftest-vita.sh` drives synthetic GX register writes through the
+bridge and reads back pixels. Unattended, on the device:
+
+```
+programs: compiled=2 cached=0 failed=0
+gxm frames=2 scenes=2 draws=8 vtx=30 drop_full=0 drop_nomtx=0 drop_novp=0
+    drop_prim=0 scale=1.214 copy=640x448
+probe clear      0d1a29   exact
+probe triangles  ff3030   exact
+probe quads      30ff30   exact
+probe strip      4060ff   exact
+probe fan        ffd040   exact
+```
+
+All five probes exact, and the fetched frame (`scripts/raw_to_png.py`) shows
+the four topologies in their four quadrants. Quads, triangles, strips and fans
+all go through `emit_topology`, which fans everything into a U32 triangle list
+and alternates strip winding.
+
+Then, with the real game attached: **the backend draws SMG's own geometry on
+the console** -- `gxm scenes=1 draws=2 vtx=8`, from `gx cmds=486 draws=2`.
+
+### Things the hardware decided, not the design
+
+- **GXM has no clear call.** Colour is an oversized triangle at (-1,-1),
+  (3,-1), (-1,3) with depth ALWAYS and depth writes off; depth is
+  `SetBackgroundDepth(1.0)` plus force-load DISABLED, which makes the clear
+  free rather than a pass.
+- **`sceGxmDraw` is always indexed.** There is no array draw, so every
+  primitive gets an index buffer whether it needs one or not.
+- **GX clip space is inside GXM's.** GXM follows the OpenGL convention and GX
+  produces z in [-w, 0], so the projection transcribed from `gx_soft.c` needs
+  no depth-range fixup.
+- **CDRAM allocations round to 256 KB, LPDDR to 4 KB**, and display buffers
+  want `SCE_GXM_COLOR_SURFACE_ALIGNMENT` -- not the 1 MB that looked like the
+  safe over-estimate and was the first hardware failure.
+- **`sceGxmUnmapMemory` does not know about USSE mappings**, so the fragment
+  USSE offset has to be carried alongside the uid and released separately.
+
+### The cache is real
+
+Shaders compile on first run and persist. A second, differently-built binary
+launched with `compiled=0 cached=2` -- the GXP blobs outlived the executable
+that made them. `load_blob` runs `sceGxmProgramCheck` before trusting a file
+and `store_blob` writes `.tmp` then renames, so a killed process leaves no
+half-written program behind. `GVSC_COMPILE_BUDGET` is 6 per launch, which is
+the ShaccCg wall documented above turned into a policy.
+
+### What is not there yet
+
+The passthrough shader pair is exactly that: position, colour, texcoord in,
+colour out. No TEV, no textures, no lighting -- those are the UID-keyed
+Dolphin shaders, and the translation and compilation for them is already
+proven above; what is missing is the plumbing from `LoadBpRegister` state to a
+cache lookup. Per-draw blend and depth state is likewise still fixed.
+
+No frame has been presented from the real game yet. Frames present on
+copy-to-XFB (BP 0x52 bit 14) and the boot stops before the first one, in a
+poll of an OHCI register at `0x804C82B0`, after 659,568 blocks. At the same
+block count the host chassis reaches the same IOS state, the same retrace
+count and the same hang count, but 4,361 MMIO reads against the console's
+5,257,974. That divergence is in the CPU/Flipper HLE, not in this backend --
+which was established by booting with graphics disabled (`nogfx.txt`) and
+watching it stop in exactly the same place.

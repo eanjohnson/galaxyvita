@@ -2,6 +2,59 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-16 — The GX stream reaches the Vita's GPU
+
+The graphics backend is real hardware now, not a host oracle.
+`vita/gfx/gxm.c` + `shader_cache.c` + `gx_gxm.c` take the GX FIFO through
+ModernGekko's command processor and out to sceGxm: context and ring buffers,
+960x544 double-buffered display queue, on-device Cg compilation persisted to
+`ux0:`, and a `GxSink` that turns GX transform/viewport/primitive state into
+GXM draws.
+
+Unattended self-test on the console (`scripts/gxm-selftest-vita.sh`):
+
+```
+programs: compiled=2 cached=0 failed=0
+gxm frames=2 scenes=2 draws=8 vtx=30 drop_full=0 drop_nomtx=0 drop_novp=0
+    drop_prim=0 scale=1.214 copy=640x448
+probe clear 0d1a29  triangles ff3030  quads 30ff30  strip 4060ff  fan ffd040
+```
+
+Five pixel probes, all exact; the fetched frame shows all four topologies in
+their quadrants. Then with the game attached, **the backend drew SMG's own
+geometry on the console**: `gx cmds=486 draws=2` in, `gxm scenes=1 draws=2
+vtx=8` out. The shader cache survives across builds -- a later, differently
+linked binary launched `compiled=0 cached=2`.
+
+vitaGL, mathneon, vitaShARK and SceShaccCgExt are off the link entirely. The
+self is UNSAFE, because a safe self loads the ShaccCg module and then fails
+every compile.
+
+Two device-only defects had to go first, and neither was visible on the host:
+
+- **The boot was I/O-bound on its own logging.** One open/append/close per log
+  line on a memory card, and a line per PPC control-register write. The
+  dispatch rate decayed 9614 -> 9367 -> 3266 -> 1163 blocks per two seconds as
+  the log grew, which reads exactly like a hang. Batching to one write per
+  12 KB took the same binary from ~196k blocks to 659,568.
+- **Nothing could distinguish a hung boot from a slow one.** There is a
+  watchdog thread now -- own file, no shared mutex, dispatch count every two
+  seconds -- and a `nogfx.txt` flag that boots with graphics disabled. That
+  flag is what exonerated this backend: with graphics off the boot stopped in
+  exactly the same place.
+
+Where it stops is now the interesting question, and it is a CPU/HLE question:
+`stop=spin` at `0x804C82B0`, polling an OHCI register. At the same 659,568
+blocks the host chassis shows the same IOS state, the same `retrace=5` and the
+same `hangs=3`, but `mmio_r=4361` against the console's `5257974`.
+
+Also new: `vita_create_self` aborts about half the time with "Cannot allocate N
+bytes for SCE data at end of segment 0" depending purely on where the read-only
+segment lands, so `build-vita.sh` pads and retries rather than leaving a coin
+flip in the build.
+
+See [docs/GRAPHICS-BACKEND.md](docs/GRAPHICS-BACKEND.md).
+
 ## 2026-09-15 — The Wii Remote reaches the game
 
 `runtime/bt.c` models the Wii's Bluetooth dongle at HCI level with one remote
