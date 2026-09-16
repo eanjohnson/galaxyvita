@@ -2,6 +2,60 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-16 — The console was running last week's code
+
+The boot stopped at 659,568 blocks in a poll of an audio register, and the host
+sailed past the same point. Two separate causes, one behind the other.
+
+**The Vita links prebuilt AOT objects and nothing checks them.** CMake globs
+`generated/build/aot-vita`; no dependency edge runs from an object back to the
+chunk it was compiled from. The chunk holding `AIInit` was rewritten when
+`patch-aot-hle.py` added the dispatcher escape for the `__AI_SRC_INIT` hook, and
+its Vita object was never rebuilt -- `measure-aot-size.sh` skips the Vita half
+when VITASDK is missing and says so on stderr and nowhere else. So on the
+console that call compiled to a local `goto` and never reached the chassis: the
+hook was present, correct, and unreachable. `scripts/check-aot-fresh.sh` fails
+the configure now, asking ninja rather than comparing mtimes.
+
+**The register it was polling was dead.** AISCNT at 0xCD006C08 free-runs at the
+sample rate while PSTAT is set; it was one word of a four-word file that never
+moved, so `AIInit`'s clock probe -- reset the counter, start it, spin until it
+ticks -- could never finish. Modelling it turned out to be smaller than the stub
+that was hiding it: both measurement loops now exit after two or three
+dispatches, the probe accepts on its first pass, and the HLE entry came out. A
+20M-block host run against the stubbed build is identical on every number
+(`fifo=608906 retrace=306 gx=242178`, same IOS, Bluetooth and disc totals)
+except the MMIO reads the probe itself does.
+
+On the console the wall is gone. The old ceiling was 659,568 blocks with
+`fifo` stuck at 1310; the same boot now runs through it, and the FIFO climbs
+past 6,000 and keeps going.
+
+Finding it took six device round-trips, and the tooling took most of the blame:
+
+- `scripts/run-vita.sh` is the device loop in one command now -- upload, launch,
+  stream the watchdog live, fetch the logs -- and it sets or clears `nogfx.txt`
+  explicitly every run instead of inheriting it.
+- The watchdog was calling `log_flush()` *before* writing its own line, which
+  takes the log mutex. Wedge the emulator inside a flush and the watchdog blocks
+  on the very thing it exists to report on, turning every diagnosis into "no
+  output". Its line goes out first now, and the flush after it is a try-lock.
+- A held file handle buffers, so the last ticks before a wedge never reached the
+  card. Synced.
+- `GV_TRACE` takes a starting block, without which a window trace on something
+  that happens at block 683,844 is capped long before it gets there.
+
+**The boot now stops somewhere else**, at 770k-810k blocks, and it is a
+different shape of failure: every thread stops producing output at once, the
+process stays resident (vitacompanion `kill` answers "Killed."), and no core
+dump is written. Ruled out so far: the graphics backend (a `nogfx.txt` boot
+stops identically), host FTP polling (a run with no polling at all reaches the
+same place), a log-mutex deadlock and unflushed writes (both fixed above, no
+change), a full memory card (a 64 MB upload succeeds), auto-suspend (`nosleep`
+re-asserted every five seconds), and missing media (re-staged from a fresh
+248-file, 22.4 MB census taken at 20M blocks). The host runs the same code to
+20M blocks without trouble, so it is Vita-side.
+
 ## 2026-09-16 — The GX stream reaches the Vita's GPU
 
 The graphics backend is real hardware now, not a host oracle.
