@@ -197,14 +197,30 @@ int main(int argc, char **argv) {
          (unsigned long long)gx_cp_undecoded(ch.gx));
   if (ch.have_disc && ch.disc.seq) {
     /* The last files the game asked for, newest first: the boot's high-water
-     * mark. Capped because a full run touches hundreds. */
-    printf("disc files touched=%u, last 24 in load order:\n", ch.disc.seq);
-    for (u32 want = ch.disc.seq; want + 24u > ch.disc.seq && want; want--)
+     * mark. Capped because a full run touches hundreds.
+     *
+     * GV_DISC_CENSUS names a file to write the whole list to instead, one
+     * disc-relative path per line in load order. That list is what decides
+     * which part of a 3.2 GB extraction has to be staged on the console:
+     * everything the boot never asks for can stay on the host. */
+    const char *census = getenv("GV_DISC_CENSUS");
+    u32 shown = census ? ch.disc.seq : 24u;
+    FILE *cf = census ? fopen(census, "w") : NULL;
+    printf("disc files touched=%u, last %u in load order:\n", ch.disc.seq,
+           shown < ch.disc.seq ? shown : ch.disc.seq);
+    for (u32 want = ch.disc.seq; want + shown > ch.disc.seq && want; want--)
       for (u32 i = 0; i < ch.disc.count; i++)
         if (ch.disc.entries[i].first_seen == want) {
-          printf("  %4u %s\n", want, ch.disc.entries[i].path);
+          if (cf)
+            fprintf(cf, "%s\n", ch.disc.entries[i].path);
+          else
+            printf("  %4u %s\n", want, ch.disc.entries[i].path);
           break;
         }
+    if (cf) {
+      fclose(cf);
+      printf("  written to %s\n", census);
+    }
   }
   if (gfx)
     soft_gfx_report(gfx);
