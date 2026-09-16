@@ -31,6 +31,20 @@ if(GALAXYVITA_AOT_OBJS)
   list(FILTER GALAXYVITA_AOT_OBJS EXCLUDE REGEX "CMakeCCompiler")
 endif()
 
+# Objects are globbed, so no dependency edge runs from one back to the chunk it
+# was compiled from: a stale object links silently and the console runs code the
+# host has already moved past. Check before that can happen.
+if(GALAXYVITA_AOT_OBJS)
+  execute_process(
+    COMMAND "${CMAKE_SOURCE_DIR}/scripts/check-aot-fresh.sh" "${AOT_OBJ_DIR}"
+    RESULT_VARIABLE _aot_fresh
+    OUTPUT_VARIABLE _aot_fresh_out
+    ERROR_VARIABLE _aot_fresh_err)
+  if(NOT _aot_fresh EQUAL 0)
+    message(FATAL_ERROR "${_aot_fresh_err}")
+  endif()
+endif()
+
 set(GALAXYVITA_AOT_SOURCES "")
 if(NOT GALAXYVITA_AOT_OBJS)
   file(GLOB GALAXYVITA_AOT_SOURCES "${AOT_GEN_DIR}/*.c" "${AOT_GEN_DIR}/chunks/*.c")
