@@ -118,6 +118,7 @@ typedef struct {
   unsigned tex_n;
   unsigned tex_decoded, tex_unmapped, tex_unsupported, tex_nospace;
   unsigned textured_draws;
+  unsigned sampler_index;
   const GvTex *bound; /* what the context currently has on TEXUNIT0 */
 
   Arena arena[ARENA_COUNT];
@@ -216,7 +217,7 @@ static int build_pipeline(void) {
   const SceGxmProgram *vs, *fs, *fs_tex;
   SceGxmVertexAttribute attrs[3];
   SceGxmVertexStream stream;
-  const SceGxmProgramParameter *p_pos, *p_col, *p_tex;
+  const SceGxmProgramParameter *p_pos, *p_col, *p_tex, *p_smp;
   SceGxmBlendInfo blend;
   int rc;
 
@@ -328,6 +329,22 @@ static int build_pipeline(void) {
              (unsigned)rc);
     return 0;
   }
+
+  /* Which texture unit the sampler actually landed on.
+   *
+   * The attributes above are all bound by asking the compiled program where it
+   * put them, with a comment saying why guessing is unsafe -- and then the
+   * sampler was bound to unit 0 by assumption anyway. TEXUNIT0 in the source is
+   * a request, not a guarantee, and a wrong unit binds the texture somewhere
+   * nothing samples: every fragment reads the default, which is white, and the
+   * frame comes out as a white rectangle that looks exactly like no texturing
+   * at all. */
+  p_smp = sceGxmProgramFindParameterByName(fs_tex, "sTex");
+  if (!p_smp) {
+    snprintf(g_error, sizeof(g_error), "sampler sTex missing from program");
+    return 0;
+  }
+  g.sampler_index = (unsigned)sceGxmProgramParameterGetResourceIndex(p_smp);
   return 1;
 }
 
@@ -407,6 +424,25 @@ static const GvTex *bind_texture(void) {
                                 (unsigned)ref.w, (unsigned)ref.h, 0) < 0) {
       g.tex_unsupported++;
       return NULL;
+    }
+  }
+
+  /* The decoded image, straight to the card the first few times.
+   *
+   * "The screen is white" has two causes that look identical from the host: a
+   * texture that decoded to white, and a correct texture that nothing samples.
+   * The frame dump cannot tell them apart and a device round trip is thirty-
+   * five megabytes and ten minutes, so the run that asks the question should
+   * carry the answer to both halves. */
+  if (g.dump_dir[0] && g.tex_decoded < 4u) {
+    char path[192];
+    SceUID fd;
+    snprintf(path, sizeof(path), "%s/tex_%02u_%dx%d_f%u.raw", g.dump_dir,
+             g.tex_decoded, ref.w, ref.h, (unsigned)ref.fmt);
+    fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+    if (fd >= 0) {
+      sceIoWrite(fd, g.tex_arena + (g.tex_arena_used - bytes), (SceSize)bytes);
+      sceIoClose(fd);
     }
   }
 
@@ -717,7 +753,7 @@ static void on_prim_end(void *user) {
       g.bound = tex;
     }
     if (tex) {
-      sceGxmSetFragmentTexture(ctx, 0, &tex->tex);
+      sceGxmSetFragmentTexture(ctx, g.sampler_index, &tex->tex);
       g.textured_draws++;
     }
   }
@@ -821,10 +857,10 @@ void gx_gxm_report(char *out, unsigned n) {
            "gxm frames=%u scenes=%u draws=%u vtx=%u drop_full=%u "
            "drop_nomtx=%u drop_novp=%u drop_prim=%u scale=%.3f copy=%ux%u "
            "dumped=%u tex=%u/%u arena=%uk miss_unmap=%u miss_fmt=%u "
-           "miss_space=%u",
+           "miss_space=%u smp=%u",
            g.frames, g.scenes, g.draws, g.verts, g.dropped_full,
            g.dropped_nomatrix, g.dropped_novp, g.dropped_unsupported,
            (double)g.scale, g.copy_w, g.copy_h, g.dumped, g.textured_draws,
            g.tex_decoded, g.tex_arena_used / 1024u, g.tex_unmapped,
-           g.tex_unsupported, g.tex_nospace);
+           g.tex_unsupported, g.tex_nospace, g.sampler_index);
 }
