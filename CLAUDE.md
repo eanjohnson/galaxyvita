@@ -58,6 +58,14 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   it, and cost two days of chasing a "host/Vita divergence" that was really
   last week's code. `scripts/check-aot-fresh.sh` now fails the configure; if a
   device result disagrees with a host result, suspect this first.
+- **A census that loses a file wedges the console and only the console.** The
+  boot is staged from `generated/census.txt`, and the census is written by a
+  host run that can see every file, so a lost entry is a file only the device
+  misses -- and the symptom lands thousands of blocks away, as an error path,
+  not as a missing-file error. One uninitialised `first_seen` cost days that
+  way. `scripts/check-staging.sh` boots the staged subset against the full
+  extraction and requires them to be indistinguishable; run it after
+  regenerating a census, before staging.
 - The Vita does not need the whole 3.2 GB extraction. The boot touches 25 MB of
   it; `GV_DISC_CENSUS` records exactly which files, and
   `scripts/stage-media-vita.sh` sends only those.

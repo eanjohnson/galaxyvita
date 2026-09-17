@@ -2,6 +2,51 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-16 — The stall past it was one file the census lost
+
+The boot got past the audio-register wall and stopped again at 770k-810k
+blocks: every thread silent at once, the process still resident, no core dump.
+It read as a Vita-side hang because the host ran the same code to 20M blocks
+without trouble. It was not Vita-side at all.
+
+**The host and the console were not booting the same disc.** The console gets
+only the files `generated/census.txt` names; the host gets the whole 3.2 GB
+extraction. Mirroring the console's exact file set locally -- symlinks, 256
+files -- reproduced the failure on the host immediately and exactly:
+`fifo=8660 mmio_w=13284 last=0x804ab358` at 806,893 blocks, matching the
+console's last watchdog line counter for counter. With the full extraction the
+same block count gives `fifo=1310 mmio_w=5636`. One file was absent:
+`files/AudioRes/SMR.szs`, which is the *first* thing the boot reads. It failed
+49 times, the audio load bailed out, and the guest went off down an error path.
+
+**The census lost it to uninitialised memory.** `DiscEntry` comes out of
+`realloc` and `push()` never set `first_seen`; `disc_read` only assigns it when
+it reads back as zero, so an entry that landed on dirty memory counted as
+already-seen for the whole run and never entered the census. It came back as
+`fs=4173317439`. Regenerating the census before the fix reproduced the same 248
+files byte for byte -- same allocation pattern, same garbage -- which is what
+made it look like the file genuinely was never read. With `first_seen = 0` the
+census is 249 files and 22,589,117 bytes, up by exactly 196,608: `SMR.szs` to
+the byte.
+
+Two dead ends worth recording, both cheap and both wrong. Peak host stack
+through the region is under 256 KB against the 8 MB the AOT thread gets, so
+this was not the stack overflow whose signature it shares. And UBSan
+(alignment, bounds, shift, object-size) is clean through 3M blocks across the
+runtime and `gx_cp`, so it was not undefined behaviour that x86 tolerates and
+ARM does not.
+
+`scripts/check-staging.sh` is the check that found it, kept: it builds the tree
+`stage-media-vita.sh` would send, boots it, boots the full extraction, and
+requires the two to be indistinguishable. It passes at 20M blocks. The console
+also gained a disc line in its log, naming any file a read wanted and could not
+open -- it previously had no way to report the one failure only it can have.
+
+**Not yet confirmed on hardware.** `10.42.0.206` is off-network (1337 and 1338
+both time out) and this environment has no `.env.local`. The eboot is built and
+the regenerated census is in place; the run is `./scripts/stage-media-vita.sh
+generated/census.txt` then `./scripts/run-vita.sh`.
+
 ## 2026-09-16 — The console was running last week's code
 
 The boot stopped at 659,568 blocks in a poll of an audio register, and the host
