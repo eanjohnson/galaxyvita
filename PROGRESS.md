@@ -2,6 +2,39 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-17 — The boot renders the strap screen and stops asking for a Wii Remote
+
+With display lists recorded rather than executed, a 90M-block boot dumps
+frames that are simply readable. The wrist-strap health-and-safety screen
+comes out in full colour with its textures, its text and the Nintendo logo,
+and the screen after it is legible too: **"Connect the Wii Remote to Player
+1."** That is where the boot now sits.
+
+The boot order is now: strap screen (A dismisses it) -> the connect-a-remote
+screen, which nothing dismisses. Behind it the game has already loaded the
+title screen and the file select -- `LayoutData/TitleLogo.arc`,
+`PressStart.arc`, `StageData/FileSelect.arc`, `LayoutData/FileInfo.arc`,
+`ObjectData/FileSelectData{Mario,Luigi,Yoshi,Peach,Kinopio,Planet}.arc` and
+`AudioRes/Stream/SMG_title_strm.ast`, the title theme.
+
+At 200M blocks it runs to the cap without a stall: 3,037 frames, 2.89M draws,
+22.8M vertices, 1.11M display lists, `unk=0 pending=0`, nothing unresolved.
+Disc reads stop growing at 6,598 once file select is loaded, so it is idling
+on the gate rather than making progress.
+
+The gate is the one the frame names. The Bluetooth stack looks healthy from
+below -- `conn=1 intr=1 reports=3203 mode=0x33 ir=1 leds=0x10`, and LED 1 lit
+means the game did assign a player -- but WPAD is not accepting the remote as
+player 1. That is the next thing to answer, and unlike every gate before it,
+the game says out loud what it wants.
+
+**The census was 26 files short** and had to be regenerated: it was written by
+a host run that died 4.5 MB into the GX stream, so it never saw anything past
+the strap screen. `scripts/check-staging.sh` passes at 30M blocks on the new
+275-file list. Anything staged to the console before this was missing the title
+screen and the file select -- exactly the failure mode the census check exists
+to catch, arriving on schedule the first time the boot got further.
+
 ## 2026-09-17 — Display lists were being submitted as commands; the boot reaches file select
 
 The boot froze at identical numbers across 55M- and 70M-block runs, and the
