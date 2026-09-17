@@ -2,6 +2,53 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-17 — Five launch paths, and the bubble is still the only one that works
+
+A second SceShell plugin now exists to test this: `vita/plugin/`, built by
+`build-gvlaunch.sh` from upstream vitacompanion plus `gvlaunch.patch`. It
+coexists with the installed plugin rather than replacing it -- command port
+1339, module name `gvlaunch`, and a `GV_MINIMAL` build that is the command
+server and nothing else: no FTP, no input thread, no nosleep, no taipool. It is
+listed last in `ur0:tai/config.txt`, so if it ever fails to load the stock
+plugin is untouched and the console stays reachable. Both answer after a
+reboot: 1338 says `vitacompanion 1.06`, 1339 says `vitacompanion 1.07`.
+
+Every launch path tried, against the same eboot with the same `idle.txt` and
+`nogfx.txt` flags the two surviving bubble runs used:
+
+| path | result |
+|---|---|
+| `sceAppMgrLaunchAppByUri(0x20000)` (stock) | 5 ticks, killed |
+| `sceAppMgrLaunchAppByUri(0xFFFFF)` | 6 ticks, killed |
+| `sceAppMgrLoadExec("app0:eboot.bin")` | 14 ticks, killed, `proc=` restarts from zero |
+| `sceAppMgrLaunchAppByName(0x60000)` | 6 ticks, killed |
+| `sceAppMgrLaunchAppByName2` | rc=0, nothing started |
+| `sceAppMgrLaunchAppByName2ForShell` | rc=0x00010004 (an app id), nothing started |
+| **from the LiveArea bubble** | **30 ticks, ran to completion, clean exit** |
+
+The flags word is not it. The SDK header says `sceAppMgrLaunchAppByUri`'s flags
+"must be 0x20000" and that any other value opens the LiveArea instead, so
+0xFFFFF was never the different launch path it looked like -- which is exactly
+why it measured the same.
+
+Two eliminations worth keeping. The stock plugin is not an app-killer: the
+bubble launches survived while it was loaded, and nothing in its source
+terminates an app except on the `quit` command. And the kill is not attached to
+the process vitacompanion started -- `sceAppMgrLoadExec` produces a genuinely
+new process, whose own `proc=` clock restarts at zero, and it is killed 14 s
+into *its* life. A successor inherits it.
+
+So the distinction is not which function, and not which process. It is that
+every one of these is a programmatic launch, and the one that works is the
+shell launching the app through its own UI. `sceAppMgrLaunchAppByName2ForShell`
+is the closest thing to that and it returns an app id without starting
+anything, which is the signature of a two-stage launch --
+`sceAppMgrLaunchAppByName2ndStage` exists next to it in the stub library. Its
+NID is published (0xADAC0E8D, and `_`-prefixed 0xDEDD2AED) but its arguments
+are not documented anywhere, and calling an undocumented shell-internal
+function with guessed arguments risks faulting SceShell, which is the one
+failure mode that needs somebody at the device. Stopped there deliberately.
+
 ## 2026-09-17 — The cap was vitacompanion's `launch`, and nothing else
 
 The user launched the app from its LiveArea bubble by hand. It ran to

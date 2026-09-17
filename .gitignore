@@ -69,3 +69,7 @@ Thumbs.db
 __pycache__/
 *.pyc
 .venv/
+
+# Built plugin binary -- rebuild with vita/plugin/build-gvlaunch.sh
+*.suprx
+*.skprx

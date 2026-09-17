@@ -1,0 +1,253 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 19bfbb1..a30fdcb 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -15,6 +15,9 @@ include("${VITASDK}/share/vita.cmake" REQUIRED)
+ set(VITACOMPANION_FTP_PORT 1337 CACHE STRING "FTP control port")
+ set(VITACOMPANION_CMD_PORT 1338 CACHE STRING "Command server port")
+ set(VITACOMPANION_MODULE_NAME "vitacompanion" CACHE STRING "Vita module name")
++set(GV_LAUNCH_FLAGS "0xFFFFF" CACHE STRING "flags word for sceAppMgrLaunchAppByUri")
++set(GV_MINIMAL 0 CACHE STRING "command server only: no ftp, input or nosleep")
++add_definitions(-DGV_LAUNCH_FLAGS=${GV_LAUNCH_FLAGS} -DGV_MINIMAL=${GV_MINIMAL})
+ 
+ if(NOT VITACOMPANION_FTP_PORT MATCHES "^[0-9]+$" OR
+    VITACOMPANION_FTP_PORT LESS 1 OR VITACOMPANION_FTP_PORT GREATER 65535)
+@@ -105,9 +108,17 @@ target_compile_definitions(vitacompanion PRIVATE
+ 
+ add_dependencies(vitacompanion vitacompanion_kernel_stubs)
+ 
++# taipool and ftpvita back the FTP server, which the minimal build does
++# not have; they are vendored deps that are not installed in this SDK. libk
++# stays either way -- it is where strcmp and strcpy come from.
++if(GV_MINIMAL EQUAL 1)
++  set(GV_EXTRA_LIBS "")
++else()
++  set(GV_EXTRA_LIBS taipool ftpvita)
++endif()
++
+ target_link_libraries(vitacompanion
+-  taipool
+-  ftpvita
++  ${GV_EXTRA_LIBS}
+   k
+   gcc
+   SceLibKernel_stub_weak
+diff --git a/src/cmd_definitions.c b/src/cmd_definitions.c
+index 6ef1902..9ba39bc 100644
+--- a/src/cmd_definitions.c
++++ b/src/cmd_definitions.c
+@@ -22,7 +22,10 @@ static bool validate_wait(char **arg_list, size_t arg_count,
+ 
+ const cmd_definition cmd_definitions[] = {
+     {.name = "help", .description = "Display this help screen", .min_arg_count = 0, .max_arg_count = 0, .validator = NULL, .executor = &cmd_help},
+-    {.name = "launch", .description = "Launch an app by Title ID", .min_arg_count = 1, .max_arg_count = 1, .validator = NULL, .executor = &cmd_launch},
++    {.name = "launch", .description = "Launch an app by Title ID [flags]", .min_arg_count = 1, .max_arg_count = 2, .validator = NULL, .executor = &cmd_launch},
++    {.name = "launchname", .description = "Launch via sceAppMgrLaunchAppByName [flags]", .min_arg_count = 1, .max_arg_count = 2, .validator = NULL, .executor = &cmd_launchname},
++    {.name = "launchname2", .description = "Launch via sceAppMgrLaunchAppByName2", .min_arg_count = 1, .max_arg_count = 1, .validator = NULL, .executor = &cmd_launchname2},
++    {.name = "launchshell", .description = "Launch via sceAppMgrLaunchAppByName2ForShell", .min_arg_count = 1, .max_arg_count = 1, .validator = NULL, .executor = &cmd_launchshell},
+     {.name = "nosleep", .description = "Control automatic suspend prevention", .min_arg_count = 1, .max_arg_count = 1, .validator = NULL, .executor = &cmd_nosleep},
+     {.name = "press", .description = "Press or position a synthetic input", .min_arg_count = 1, .max_arg_count = 4, .validator = &validate_press, .executor = &cmd_press},
+     {.name = "quit", .description = "Quit an app by Title ID, or all apps", .min_arg_count = 1, .max_arg_count = 1, .validator = NULL, .executor = &cmd_quit},
+@@ -101,18 +104,83 @@ void cmd_nosleep(char **arg_list, size_t arg_count, char *res_msg) {
+   }
+ }
+ 
++/* Hand-rolled rather than strtoul: this build links libk, not a full libc,
++ * and a missing symbol would only show up at link time on a plugin that has to
++ * be right first try. Accepts 0x-prefixed hex or decimal. */
++static unsigned int gv_parse_uint(const char *p) {
++  unsigned int v = 0;
++  int base = 10;
++  if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
++    base = 16;
++    p += 2;
++  }
++  for (; *p; p++) {
++    unsigned int d;
++    if (*p >= '0' && *p <= '9')
++      d = (unsigned int)(*p - '0');
++    else if (base == 16 && *p >= 'a' && *p <= 'f')
++      d = (unsigned int)(*p - 'a' + 10);
++    else if (base == 16 && *p >= 'A' && *p <= 'F')
++      d = (unsigned int)(*p - 'A' + 10);
++    else
++      break;
++    v = v * (unsigned int)base + d;
++  }
++  return v;
++}
++
+ void cmd_launch(char **arg_list, size_t arg_count, char *res_msg) {
+   char uri[32];
++  /* Upstream hardcodes 0x20000 here. An app launched with that flags word is
++   * killed ~14 s later, while the same binary started from its LiveArea bubble
++   * runs as long as it likes -- so the flags word is the variable under test,
++   * and it is settable per command rather than baked in. */
++  int flags = GV_LAUNCH_FLAGS;
++
++  if (arg_count > 2) {
++    flags = (int)gv_parse_uint(arg_list[2]);
++  }
+ 
+   snprintf(uri, 32, "psgm:play?titleid=%s", arg_list[1]);
+ 
+-  if (sceAppMgrLaunchAppByUri(0x20000, uri) < 0) {
++  if (sceAppMgrLaunchAppByUri(flags, uri) < 0) {
+     strcpy(res_msg, "Error: cannot launch the app. Is the TITLEID correct?\n");
+   } else {
+     strcpy(res_msg, "Launched.\n");
+   }
+ }
+ 
++/* Other ways into the same place. psgm:play is only one of several launch
++ * entry points, and SceShell does not use it for a bubble -- so if the ~14 s
++ * kill is a property of the launch path rather than of the app, one of these
++ * should behave like the bubble does. Each reports its return value, because
++ * "it launched" and "it returned 0 and did nothing" look identical from here.
++ *
++ *   launchshell  sceAppMgrLaunchAppByName2ForShell -- what SceShell itself uses
++ *   launchname2  sceAppMgrLaunchAppByName2
++ *   launchname   sceAppMgrLaunchAppByName, flags default 0x60000
++ */
++void cmd_launchshell(char **arg_list, size_t arg_count, char *res_msg) {
++  (void)arg_count;
++  SceUID rc = sceAppMgrLaunchAppByName2ForShell(arg_list[1], "", NULL);
++  snprintf(res_msg, 128, "ByName2ForShell rc=0x%08X\n", (unsigned int)rc);
++}
++
++void cmd_launchname2(char **arg_list, size_t arg_count, char *res_msg) {
++  (void)arg_count;
++  int rc = sceAppMgrLaunchAppByName2(arg_list[1], "", NULL);
++  snprintf(res_msg, 128, "ByName2 rc=0x%08X\n", (unsigned int)rc);
++}
++
++void cmd_launchname(char **arg_list, size_t arg_count, char *res_msg) {
++  int flags = 0x60000;
++  if (arg_count > 2)
++    flags = (int)gv_parse_uint(arg_list[2]);
++  int rc = sceAppMgrLaunchAppByName(flags, arg_list[1], "");
++  snprintf(res_msg, 128, "ByName flags=0x%X rc=0x%08X\n", (unsigned int)flags,
++           (unsigned int)rc);
++}
++
+ void cmd_reboot(char **arg_list, size_t arg_count, char *res_msg) {
+   scePowerRequestColdReset();
+   strcpy(res_msg, "Rebooting...\n");
+diff --git a/src/cmd_definitions.h b/src/cmd_definitions.h
+index 9cce0eb..56aea19 100644
+--- a/src/cmd_definitions.h
++++ b/src/cmd_definitions.h
+@@ -18,6 +18,9 @@ typedef struct {
+ const cmd_definition *cmd_get_definition(char *cmd_name);
+ void cmd_help(char **arg_list, size_t arg_count, char *res_msg);
+ void cmd_launch(char **arg_list, size_t arg_count, char *res_msg);
++void cmd_launchshell(char **arg_list, size_t arg_count, char *res_msg);
++void cmd_launchname2(char **arg_list, size_t arg_count, char *res_msg);
++void cmd_launchname(char **arg_list, size_t arg_count, char *res_msg);
+ void cmd_nosleep(char **arg_list, size_t arg_count, char *res_msg);
+ void cmd_quit(char **arg_list, size_t arg_count, char *res_msg);
+ void cmd_reboot(char **arg_list, size_t arg_count, char *res_msg);
+diff --git a/src/main.c b/src/main.c
+index 8613386..0f71f1d 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -10,7 +10,11 @@
+ #include "net.h"
+ #include "nosleep.h"
+ 
++#if GV_MINIMAL != 1
++/* Only the FTP server needs taipool, and the minimal build has no FTP server.
++ * The header is a vendored dependency that is not in the SDK here. */
+ #include <taipool.h>
++#endif
+ 
+ extern SceUID net_thid;
+ extern volatile int all_is_up;
+@@ -19,6 +23,21 @@ extern volatile int net_connected;
+ volatile int run;
+ 
+ void __unused _start() __attribute__((weak, alias("module_start")));
++#if GV_MINIMAL == 1
++int __unused module_start(SceSize argc, const void* args)
++{
++    (void)argc;
++    (void)args;
++
++    /* A second plugin in the same SceShell as the stock vitacompanion.
++     * Everything that is not the command server is left to the original: no
++     * input thread, no nosleep, no FTP, no taipool. The less this module does
++     * inside SceShell the less it can break -- and if it fails to load at all,
++     * the stock plugin is untouched and the console stays reachable. */
++    run = 1;
++    return net_start() < 0 ? SCE_KERNEL_START_FAILED : SCE_KERNEL_START_SUCCESS;
++}
++#else
+ int __unused module_start(SceSize argc, const void* args)
+ {
+     int result;
+@@ -62,7 +81,21 @@ int __unused module_start(SceSize argc, const void* args)
+ 
+     return SCE_KERNEL_START_SUCCESS;
+ }
++#endif
+ 
++#if GV_MINIMAL == 1
++int __unused module_stop(SceSize argc, const void* args)
++{
++    (void)argc;
++    (void)args;
++
++    run = 0;
++    sceKernelWaitThreadEnd(net_thid, NULL, NULL);
++    net_end();
++
++    return SCE_KERNEL_STOP_SUCCESS;
++}
++#else
+ int __unused module_stop(SceSize argc, const void* args)
+ {
+     (void)argc;
+@@ -79,3 +112,4 @@ int __unused module_stop(SceSize argc, const void* args)
+ 
+     return SCE_KERNEL_STOP_SUCCESS;
+ }
++#endif
+diff --git a/src/net.c b/src/net.c
+index 16c461f..eff3d1a 100644
+--- a/src/net.c
++++ b/src/net.c
+@@ -47,7 +47,9 @@ void net_end()
+     if (all_is_up)
+     {
+         cmd_end();
++#if GV_MINIMAL != 1
+         ftpvita_fini();
++#endif
+         all_is_up = 0;
+     }
+ 
+@@ -70,6 +72,14 @@ static void do_net_connected()
+     ftpvita_set_debug_log_cb(LOG);
+ #endif
+ 
++#if GV_MINIMAL == 1
++    (void)vita_ip;
++    (void)vita_port;
++    if (cmd_start() >= 0)
++        all_is_up = 1;
++    return;
++#endif
++
+     ftpvita_set_file_buf_size(512 * 1024);
+ 
+     if (ftpvita_init(vita_ip, &vita_port) >= 0)
+@@ -111,7 +121,9 @@ static void netctl_cb(int event_type, void* arg)
+     {
+         net_connected = 0;
+         cmd_end();
++#if GV_MINIMAL != 1
+         ftpvita_fini();
++#endif
+         all_is_up = 0;
+     }
+     else if (state == 3 && !all_is_up)
