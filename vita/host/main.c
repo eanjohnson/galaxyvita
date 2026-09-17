@@ -50,6 +50,11 @@
 unsigned int _newlib_heap_size_user = 128u * 1024u * 1024u;
 
 static int g_gfx_ready = 0;
+/* What the heartbeat is actually doing, reported where it can be seen. The
+ * probe proved that presenting keeps an app alive; this app presents and dies
+ * anyway, so the question is whether its presents are happening at all. */
+static volatile unsigned g_presents;
+static volatile int g_present_rc = 1;
 
 static SceUID g_log_mtx = -1;
 static SceUID g_mem1_uid = -1;
@@ -316,10 +321,12 @@ static int watchdog(SceSize args, void *argp) {
       sceIoClose(pfd);
     n = snprintf(buf, sizeof(buf),
                  "watchdog t=%us hits=%u (+%u) pc=0x%08x fifo=%u mmio_w=%u "
-                 "free=%dk cdram=%dk phy=%dk wr=%d probe=%d lost=%u%s%s\n",
+                 "free=%dk cdram=%dk phy=%dk wr=%d probe=%d lost=%u "
+                 "pres=%u prc=0x%08x%s%s\n",
                  ticks * 2u, hits, hits - last, ch->last_pc, ch->fifo_writes,
                  ch->mmio_writes, mem.size_user / 1024, mem.size_cdram / 1024,
                  mem.size_phycont / 1024, wrote, probe, lost,
+                 g_presents, (unsigned)g_present_rc,
                  hits == last ? "  STALLED" : "",
                  log_stuck ? "  LOGLOCKED" : "");
     wrote = sceIoWrite(fd, buf, (SceSize)(n > 0 ? n : 0));
@@ -390,7 +397,8 @@ static int display_worker(SceSize args, void *argp) {
       f.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
       f.width = 960;
       f.height = 544;
-      sceDisplaySetFrameBuf(&f, SCE_DISPLAY_SETBUF_NEXTFRAME);
+      g_present_rc = sceDisplaySetFrameBuf(&f, SCE_DISPLAY_SETBUF_NEXTFRAME);
+      g_presents++;
       sceDisplayWaitVblankStart();
     } else {
       sceKernelDelayThread(100 * 1000);
