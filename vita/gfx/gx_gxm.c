@@ -489,6 +489,32 @@ static const GvTex *bind_texture(void) {
       g.tex_unsupported++;
       return NULL;
     }
+    /* Frag mode 3 overwrites the decode with a synthetic gradient.
+     *
+     * Everything measurable about this texture already reads correct -- the
+     * decode is byte-perfect when it is pulled back off the card, the
+     * texcoords span the quad, the sampler resolves to unit zero and GXM
+     * validates the texture -- and yet the quad samples solid white. That
+     * leaves two possibilities that no amount of reporting separates: the
+     * bytes the GPU reads are not the bytes the CPU wrote, or the bytes the
+     * CPU wrote are not the ones this code believes it wrote. Writing a
+     * pattern that cannot come from the game, through the same allocation and
+     * the same texture object, tells the two apart in one run. */
+    if (g.frag_mode == 3u) {
+      int yy, xx;
+      const int dw = ref.w > 1 ? ref.w - 1 : 1;
+      const int dh = ref.h > 1 ? ref.h - 1 : 1;
+      for (yy = 0; yy < ref.h; yy++) {
+        for (xx = 0; xx < ref.w; xx++) {
+          unsigned char *q = px + ((unsigned)yy * (unsigned)ref.w +
+                                   (unsigned)xx) * 4u;
+          q[0] = (unsigned char)(xx * 255 / dw);
+          q[1] = (unsigned char)(yy * 255 / dh);
+          q[2] = 0x80u;
+          q[3] = 0xFFu;
+        }
+      }
+    }
     g.tex_arena_used += bytes;
     /* The decoder writes R,G,B,A in memory order, which read as a
      * little-endian word is A<<24|B<<16|G<<8|R -- ABGR. */
