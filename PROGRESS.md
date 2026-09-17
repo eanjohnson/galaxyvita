@@ -2,6 +2,47 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-17 — 56% of the boot was cache maintenance, and the gate is the wrist strap
+
+Two hot PCs were 56% of every dispatch block in a 5M-block boot: `0x804a2f14`
+at 1.77M and `0x804a2f40` at 1.02M. They are `DCInvalidateRange` and
+`DCFlushRange` -- three-instruction `bdnz` loops stepping a pointer 32 bytes at
+a time.
+
+DolRecomp emitted `dcbi`, `dcbf` and `dcbst` as `ppc_fallback_instruction`
+followed by `return`. The chassis fallback matches none of them and falls out
+of its tail with `pc = cia + 4`, so the behaviour was **already** "do nothing".
+It just reached that answer by a call, a PC write, a return to the dispatcher
+and a re-dispatch, once per cache line. Worse, the `bdnz` already had a `goto
+label_` fast path and the `return` on the line above meant the loop could never
+take it. Inlining the no-op is semantically identical and keeps the loop inside
+the generated function.
+
+At the same 5M cap: FIFO writes 9800 -> 14652, GX commands 3512 -> 5430,
+retraces 32 -> 46, draws 28 -> 40. The hot-PC profile flattens completely --
+top entry 1.77M -> 210k, no dominant sink left. `icbi` deliberately keeps the
+fallback: instruction cache invalidation is how self-modifying code announces
+itself, it is a signal worth keeping while unhandled, and it is not hot.
+
+With that, 20M blocks reaches `fifo=1020765`, `gx=406095`, 2289 draws, 477
+retraces, 438 XFB copies, and the disc read count stops growing at the full
+22,589,152-byte census -- everything is loaded and a real frame loop is
+running.
+
+**And the screen is legible: it is the wrist-strap warning.** Rendered in
+colour, with textures, correctly. So two earlier readings were wrong. The white
+frames were not a missing TEV stand-in, they were an earlier boot stage the old
+build never got past inside the block cap; texturing and colour work better
+than the "everything is white" note suggested. And `persp=0 ortho=9156` is not
+a misclassification -- the projection reads
+`[0.0031 -1.0000 -0.0044 1.0000 -0.5000 -0.5000] ortho=1`, which decodes as
+2/640 and 2/456 against a matching 640x456 viewport. A real 2D screen, drawn
+over and over.
+
+So the boot is not slow and not mis-rendering. It is **gated at Task 2**, the
+Bluetooth wrist-strap screen (`hle_wud_is_ready` at `0x804EFB1C`): the game
+draws the warning and waits for a Wii Remote our BT stack never reports ready.
+
 ## 2026-09-17 — Five launch paths, and the bubble is still the only one that works
 
 A second SceShell plugin now exists to test this: `vita/plugin/`, built by
