@@ -76,4 +76,7 @@ int disc_read(Disc *d, u64 offset, u32 len, u8 *dst);
 int disc_read_raw(Disc *d, u64 offset, u32 len, u8 *dst);
 void disc_close(Disc *d);
 
+extern u64 g_disc_io_us;
+extern u32 g_disc_io_n;
+
 #endif

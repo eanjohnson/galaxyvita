@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static u32 be32(const u8 *p) {
   return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
@@ -279,7 +280,14 @@ static FILE *entry_fp(Disc *d, u32 idx) {
   return d->cache_fp;
 }
 
-int disc_read(Disc *d, u64 offset, u32 len, u8 *dst) {
+/* Wall-clock spent inside guest-visible file reads, and how many there were.
+ * On the host these come out of the page cache and cost nothing, which is why
+ * a 2.11x CPU win showed there and not on the console: the question "is the
+ * device CPU-bound in this phase at all?" cannot be answered without this. */
+u64 g_disc_io_us;
+u32 g_disc_io_n;
+
+static int disc_read_inner(Disc *d, u64 offset, u32 len, u8 *dst) {
   if (!d->opened || !dst)
     return 0;
   memset(dst, 0, len);
@@ -340,6 +348,21 @@ int disc_read(Disc *d, u64 offset, u32 len, u8 *dst) {
   if (!complete)
     d->misses++;
   return complete;
+}
+
+static u64 disc_now_us(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+    return 0;
+  return (u64)ts.tv_sec * 1000000u + (u64)(ts.tv_nsec / 1000);
+}
+
+int disc_read(Disc *d, u64 offset, u32 len, u8 *dst) {
+  const u64 t0 = disc_now_us();
+  const int rc = disc_read_inner(d, offset, len, dst);
+  g_disc_io_us += disc_now_us() - t0;
+  g_disc_io_n++;
+  return rc;
 }
 
 int disc_read_raw(Disc *d, u64 offset, u32 len, u8 *dst) {

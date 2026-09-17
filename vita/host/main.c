@@ -12,6 +12,7 @@
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/sysmem.h>
 #include <psp2/kernel/threadmgr.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -39,9 +40,43 @@
  * building a second binary. */
 #define NOGFX_FLAG "ux0:data/galaxyvita/nogfx.txt"
 #define IDLE_FLAG "ux0:data/galaxyvita/idle.txt"
-/* Blocks, not frames. The host chassis reaches the first real geometry a little
- * past 10M and settles around 60M; anything smaller stops inside the boot. */
-#define BLOCK_CAP 60000000u
+/* Buttons to hold down without anyone holding them. The boot is gated by
+ * screens that want a button -- the wrist strap wants A, the title screen wants
+ * A and B -- and neither vitacompanion's `press` nor anything else on the host
+ * can reach sceCtrlPeekBufferPositive, so on the console those screens would
+ * need a person at the device. That is the one thing device iteration here is
+ * not allowed to need.
+ *
+ * The file holds a hex mask in the remote's own button order (A is 0x0800, B is
+ * 0x0400), optionally followed by a period and a hold in frames: "0c00 90 30"
+ * holds A and B for 30 frames out of every 90. A button held forever is not the
+ * same input as a button pressed, and menus that advance on the edge never see
+ * one, which is why the duty cycle is there. Empty or absent means the pad
+ * alone drives the game, as it should when someone is actually playing. */
+#define BTN_FLAG "ux0:data/galaxyvita/btn.txt"
+/* Blocks, not frames. 60M stopped inside the boot: on the host the title screen
+ * is around 90M and the file select around 120M, and the console runs the same
+ * blocks in the same order. Overshooting costs nothing -- the run ends when the
+ * boot does -- while undershooting looks exactly like a hang.
+ *
+ * blocks.txt overrides it, as a decimal count, so the cap can be moved without
+ * resending a 22 MB eboot. */
+#define BLOCK_CAP 250000000u
+#define BLOCKS_FLAG "ux0:data/galaxyvita/blocks.txt"
+
+static u32 read_block_cap(void) {
+  SceUID fd = sceIoOpen(BLOCKS_FLAG, SCE_O_RDONLY, 0);
+  if (fd < 0)
+    return BLOCK_CAP;
+  char buf[32];
+  int n = sceIoRead(fd, buf, sizeof(buf) - 1);
+  sceIoClose(fd);
+  if (n <= 0)
+    return BLOCK_CAP;
+  buf[n] = 0;
+  unsigned long v = strtoul(buf, NULL, 10);
+  return v ? (u32)v : BLOCK_CAP;
+}
 
 /* Guest RAM is memblocks, not heap, so the heap exists almost entirely for
  * ShaccCg: it churns tens of megabytes per compile and how many compiles
@@ -174,8 +209,41 @@ static s16 pointer_axis(unsigned char v, int centre, int half) {
   return (s16)out;
 }
 
+/* Parsed once from BTN_FLAG; see the comment there. */
+static u16 g_btn_mask;
+static u32 g_btn_period = 90u;
+static u32 g_btn_hold = 30u;
+
+static void read_btn_flag(void) {
+  SceUID fd = sceIoOpen(BTN_FLAG, SCE_O_RDONLY, 0);
+  if (fd < 0)
+    return;
+  char buf[64];
+  int n = sceIoRead(fd, buf, sizeof(buf) - 1);
+  sceIoClose(fd);
+  if (n <= 0)
+    return;
+  buf[n] = 0;
+  unsigned mask = 0, period = 0, hold = 0;
+  int got = sscanf(buf, "%x %u %u", &mask, &period, &hold);
+  if (got < 1)
+    return;
+  g_btn_mask = (u16)mask;
+  if (got >= 2 && period)
+    g_btn_period = period;
+  if (got >= 3)
+    g_btn_hold = hold;
+  if (g_btn_hold > g_btn_period)
+    g_btn_hold = g_btn_period;
+  {
+    char line[96];
+    snprintf(line, sizeof(line), "btn flag: mask=0x%04x period=%u hold=%u",
+             (unsigned)g_btn_mask, (unsigned)g_btn_period, (unsigned)g_btn_hold);
+    log_line(line);
+  }
+}
+
 static void vita_pad(BtInput *in, u32 frame, void *user) {
-  (void)frame;
   (void)user;
   SceCtrlData pad;
   if (sceCtrlPeekBufferPositive(0, &pad, 1) < 1)
@@ -197,6 +265,10 @@ static void vita_pad(BtInput *in, u32 frame, void *user) {
     b |= BT_BTN_PLUS;
   if (pad.buttons & SCE_CTRL_SELECT)
     b |= BT_BTN_MINUS;
+  /* OR'd, not substituted: a real pad still works while the flag is set, so a
+   * run can be taken over by hand without rebooting it. */
+  if (g_btn_mask && (frame % g_btn_period) < g_btn_hold)
+    b |= g_btn_mask;
   in->buttons = b;
   in->nunchuk = 0;
   if (pad.buttons & SCE_CTRL_LTRIGGER)
@@ -322,10 +394,12 @@ static int watchdog(SceSize args, void *argp) {
     n = snprintf(buf, sizeof(buf),
                  "watchdog t=%us hits=%u (+%u) pc=0x%08x fifo=%u mmio_w=%u "
                  "free=%dk cdram=%dk phy=%dk wr=%d probe=%d lost=%u "
+                 "io=%ums/%u "
                  "pres=%u prc=0x%08x%s%s\n",
                  ticks * 2u, hits, hits - last, ch->last_pc, ch->fifo_writes,
                  ch->mmio_writes, mem.size_user / 1024, mem.size_cdram / 1024,
                  mem.size_phycont / 1024, wrote, probe, lost,
+                 (unsigned)(g_disc_io_us / 1000u), g_disc_io_n,
                  g_presents, (unsigned)g_present_rc,
                  hits == last ? "  STALLED" : "",
                  log_stuck ? "  LOGLOCKED" : "");
@@ -550,6 +624,7 @@ static int run_aot(SceSize args, void *argp) {
 
 no_gfx:
   g_watch = &ch;
+  read_btn_flag();
   chassis_set_input_fn(&ch, vita_pad, NULL);
   /* idle.txt runs the whole setup and then emulates nothing. Everything the
    * boot dies alongside -- every thread going quiet at once, the process still
@@ -570,7 +645,13 @@ no_gfx:
       return 0;
     }
   }
-  chassis_run(&ch, BLOCK_CAP);
+  {
+    u32 cap = read_block_cap();
+    char line[64];
+    snprintf(line, sizeof(line), "block cap = %u", (unsigned)cap);
+    log_line(line);
+    chassis_run(&ch, cap);
+  }
 
   snprintf(buf, sizeof(buf),
            "stop=%s hits=%u misses=%u fifo=%u ea=0x%08x pc=0x%08x "
