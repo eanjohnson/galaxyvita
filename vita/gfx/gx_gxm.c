@@ -76,6 +76,29 @@ static const char k_fragment_cg[] =
  * raster colour is what tests/host/gx_soft.c does in place of TEV, and it is
  * deliberately the same approximation here so the two renderers can still be
  * diffed frame for frame. Real TEV stage translation replaces both. */
+/* Debug variants of the textured fragment shader, chosen by fragdbg.txt.
+ *
+ * A device round trip is a 26 MB build, a 35 MB upload and several minutes of
+ * guest time before the first interesting frame, so testing one hypothesis per
+ * rebuild is the expensive way to do this. These are the three outputs that
+ * between them say where a white rectangle comes from: 1 shows the texcoord
+ * varying as red/green, so a flat frame means the attribute never reached the
+ * GPU and a gradient means it did; 2 drops the modulate, separating a bad
+ * sample from a raster colour that is already white. Each needs its own cache
+ * name or the first variant compiled would be reloaded for every later one. */
+static const char k_fragment_uv_cg[] =
+    "float4 main(float2 vTexcoord : TEXCOORD0) : COLOR\n"
+    "{\n"
+    "  return float4(vTexcoord.x, vTexcoord.y, 0.0, 1.0);\n"
+    "}\n";
+
+static const char k_fragment_texonly_cg[] =
+    "float4 main(float2 vTexcoord : TEXCOORD0,\n"
+    "            uniform sampler2D sTex : TEXUNIT0) : COLOR\n"
+    "{\n"
+    "  return tex2D(sTex, vTexcoord);\n"
+    "}\n";
+
 static const char k_fragment_tex_cg[] =
     "float4 main(float4 vColor : COLOR, float2 vTexcoord : TEXCOORD0,\n"
     "            uniform sampler2D sTex : TEXUNIT0) : COLOR\n"
@@ -119,6 +142,14 @@ typedef struct {
   unsigned tex_decoded, tex_unmapped, tex_unsupported, tex_nospace;
   unsigned textured_draws;
   unsigned sampler_index;
+  unsigned frag_mode;
+  /* The range of texture coordinates that actually arrived. A
+   * correct texture that every fragment samples at one point is
+   * indistinguishable from a broken sampler in a frame dump, and
+   * the strap image's (0,0) texel is white -- so the two candidate
+   * faults produce the same white rectangle. This separates them. */
+  float uv_lo[2], uv_hi[2];
+  unsigned uv_n;
   const GvTex *bound; /* what the context currently has on TEXUNIT0 */
 
   Arena arena[ARENA_COUNT];
@@ -149,6 +180,11 @@ typedef struct {
 
 static GxGxm g;
 static char g_error[256];
+/* Outside `g`, because gx_gxm_init() memsets it and the mode has to survive
+ * being chosen before the backend comes up. */
+static unsigned g_frag_mode;
+
+void gx_gxm_set_frag_mode(unsigned mode) { g_frag_mode = mode; }
 
 /* ------------------------------------------------------------------ */
 
@@ -308,8 +344,16 @@ static int build_pipeline(void) {
   /* The textured variant shares the vertex program, the attributes and the
    * blend state; only the fragment half differs, so it is a second program
    * against the same `vs` rather than a second pipeline. */
-  fs_tex = gvsc_program("gv_passthrough_" GV_PASSTHROUGH_VERSION "_tex.frag",
-                        k_fragment_tex_cg, 1);
+  {
+    static const char *const k_name[3] = {
+        "gv_passthrough_" GV_PASSTHROUGH_VERSION "_tex.frag",
+        "gv_passthrough_" GV_PASSTHROUGH_VERSION "_uv.frag",
+        "gv_passthrough_" GV_PASSTHROUGH_VERSION "_texonly.frag"};
+    static const char *const k_src[3] = {k_fragment_tex_cg, k_fragment_uv_cg,
+                                         k_fragment_texonly_cg};
+    const unsigned m = g.frag_mode < 3u ? g.frag_mode : 0u;
+    fs_tex = gvsc_program(k_name[m], k_src[m], 1);
+  }
   if (!fs_tex) {
     snprintf(g_error, sizeof(g_error), "textured fragment shader: %s",
              gvsc_last_error());
@@ -340,11 +384,12 @@ static int build_pipeline(void) {
    * frame comes out as a white rectangle that looks exactly like no texturing
    * at all. */
   p_smp = sceGxmProgramFindParameterByName(fs_tex, "sTex");
-  if (!p_smp) {
+  if (!p_smp && g.frag_mode != 1u) {
     snprintf(g_error, sizeof(g_error), "sampler sTex missing from program");
     return 0;
   }
-  g.sampler_index = (unsigned)sceGxmProgramParameterGetResourceIndex(p_smp);
+  g.sampler_index =
+      p_smp ? (unsigned)sceGxmProgramParameterGetResourceIndex(p_smp) : 0u;
   return 1;
 }
 
@@ -469,6 +514,7 @@ int gx_gxm_init(const GxRegs *regs) {
   g_error[0] = '\0';
   g.regs = regs;
   g.tex_arena_uid = -1;
+  g.frag_mode = g_frag_mode;
   g.copy_w = EFB_W;
   g.copy_h = 448;
   g.scale = 1.0f;
@@ -657,8 +703,21 @@ static void on_vertex(void *user, const GxVertex *v) {
   out->y = clip[1];
   out->z = clip[2];
   out->w = clip[3];
-  out->u = v->has_tex0 ? v->tex0[0] : 0.0f;
-  out->v = v->has_tex0 ? v->tex0[1] : 0.0f;
+  /* Unconditionally, as tests/host/gx_soft.c does. has_tex0 is set for every
+   * vertex the loader produces, so the ternary never chose the fallback; it
+   * only made the two renderers look like they disagreed. */
+  out->u = v->tex0[0];
+  out->v = v->tex0[1];
+  if (g.uv_n == 0u) {
+    g.uv_lo[0] = g.uv_hi[0] = out->u;
+    g.uv_lo[1] = g.uv_hi[1] = out->v;
+  } else {
+    if (out->u < g.uv_lo[0]) g.uv_lo[0] = out->u;
+    if (out->u > g.uv_hi[0]) g.uv_hi[0] = out->u;
+    if (out->v < g.uv_lo[1]) g.uv_lo[1] = out->v;
+    if (out->v > g.uv_hi[1]) g.uv_hi[1] = out->v;
+  }
+  g.uv_n++;
   if (v->has_color0) {
     memcpy(out->c, v->color0, 4);
   } else {
@@ -857,10 +916,13 @@ void gx_gxm_report(char *out, unsigned n) {
            "gxm frames=%u scenes=%u draws=%u vtx=%u drop_full=%u "
            "drop_nomtx=%u drop_novp=%u drop_prim=%u scale=%.3f copy=%ux%u "
            "dumped=%u tex=%u/%u arena=%uk miss_unmap=%u miss_fmt=%u "
-           "miss_space=%u smp=%u",
+           "miss_space=%u smp=%u fdbg=%u uv=[%.3f %.3f]-[%.3f %.3f]",
            g.frames, g.scenes, g.draws, g.verts, g.dropped_full,
            g.dropped_nomatrix, g.dropped_novp, g.dropped_unsupported,
            (double)g.scale, g.copy_w, g.copy_h, g.dumped, g.textured_draws,
            g.tex_decoded, g.tex_arena_used / 1024u, g.tex_unmapped,
-           g.tex_unsupported, g.tex_nospace, g.sampler_index);
+           g.tex_unsupported, g.tex_nospace, g.sampler_index,
+           g.frag_mode,
+           (double)g.uv_lo[0], (double)g.uv_lo[1], (double)g.uv_hi[0],
+           (double)g.uv_hi[1]);
 }

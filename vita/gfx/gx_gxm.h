@@ -36,6 +36,12 @@ void gx_gxm_sink(GxSink *out);
  * as PNGs, so the two can be put side by side. Off unless this is called. */
 void gx_gxm_dump_frames(const char *dir, unsigned count, unsigned stride);
 
+/* Which fragment shader the textured path uses: 0 the real one (texture times
+ * raster colour), 1 the texcoord varying as red/green, 2 the texture alone.
+ * 1 and 2 exist to tell apart the causes of a white frame without a rebuild
+ * per hypothesis. Must be called before gx_gxm_init(). */
+void gx_gxm_set_frag_mode(unsigned mode);
+
 const char *gx_gxm_error(void);
 
 /* One line for the boot log: frames presented, draws, vertices, and what was

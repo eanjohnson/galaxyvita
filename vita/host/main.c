@@ -86,6 +86,25 @@ static u32 read_block_cap(void) {
  * too. Every dump was of a moment nobody had a question about. The interesting
  * frames are thousands in, so the stride has to be settable without a rebuild
  * and another 35 MB upload. Format: "<count> <stride>". */
+/* Which fragment shader the GXM backend's textured path uses; see
+ * gx_gxm_set_frag_mode(). A flag file rather than a rebuild because each device
+ * cycle is a 35 MB upload and minutes of guest time before the frame that
+ * answers the question. */
+#define FRAGDBG_FLAG "ux0:data/galaxyvita/fragdbg.txt"
+
+static unsigned read_fragdbg(void) {
+  SceUID fd = sceIoOpen(FRAGDBG_FLAG, SCE_O_RDONLY, 0);
+  if (fd < 0)
+    return 0u;
+  char buf[16];
+  int n = sceIoRead(fd, buf, sizeof(buf) - 1);
+  sceIoClose(fd);
+  if (n <= 0)
+    return 0u;
+  buf[n] = 0;
+  return (unsigned)strtoul(buf, NULL, 10);
+}
+
 #define DUMP_FLAG "ux0:data/galaxyvita/dump.txt"
 static unsigned g_dump_count = 16u, g_dump_stride = 256u;
 
@@ -657,6 +676,7 @@ static int run_aot(SceSize args, void *argp) {
       snprintf(buf, sizeof(buf), "shader cache: %s", gvsc_last_error());
       log_line(buf);
     }
+    gx_gxm_set_frag_mode(read_fragdbg());
     if (!gx_gxm_init(gx_cp_regs(ch.gx))) {
       snprintf(buf, sizeof(buf), "gx backend failed: %s", gx_gxm_error());
       log_line(buf);
