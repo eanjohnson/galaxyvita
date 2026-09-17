@@ -1,6 +1,8 @@
 [submodule "third_party/DolRecomp"]
 	path = third_party/DolRecomp
-	url = https://github.com/ExpansionPak/DolRecomp.git
+	url = https://github.com/eanjohnson/DolRecomp.git
+	branch = galaxyvita
 [submodule "third_party/ModernGekko"]
 	path = third_party/ModernGekko
-	url = https://github.com/ExpansionPak/ModernGekko.git
+	url = https://github.com/eanjohnson/ModernGekko.git
+	branch = galaxyvita
