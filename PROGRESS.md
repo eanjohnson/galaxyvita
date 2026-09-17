@@ -2,6 +2,35 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-17 — The plugins are not the cause
+
+Bisected `ur0:tai/config.txt` with nine plugins commented out: NoPowerLimits,
+CapUnlocker, PSVshellPlus (kernel and shell), catlog, shellbat, pngshot,
+LowMemMode and NoTrpDrm. Left loaded: the kernel infrastructure the rest sit
+on (0syscall6, nonpdrm, repatch, kubridge, itls, yamt_helper), henkaku, and
+vitacompanion -- which cannot come out, since it is the only way in.
+
+Uploaded, read back and compared byte for byte before rebooting, and the
+lifelines were checked as still uncommented on the device itself rather than
+in the local copy. Device back in 31 s.
+
+**Three probe runs, three deaths at 13 ticks** (proc=13499ms and alike). With
+the plugins on, the probe survived twice in nine; with them off, zero in
+three. That is no change, so the plugin set is cleared.
+
+Config restored byte-identical to the backup, zero `GV-BISECT` lines left,
+rebooted, and the current eboot put back in the slot. The console is exactly
+as it was found -- worth stating, because PSVshellPlus is what the clock note
+in the boot log depends on.
+
+What is left to suspect, now that the emulator, the app's structure and the
+plugins are all cleared: the launch path itself. Every run in this log was
+started by vitacompanion's `launch`, and vitacompanion is the one thing that
+could not be taken out of the experiment. Launching the same title from its
+LiveArea bubble instead -- drivable unattended with vitacompanion's `press` --
+is the test that has not been run, and it is the only remaining variable that
+is ours rather than Sony's.
+
 ## 2026-09-17 — The cap is the console's, and it is intermittent
 
 `vita/host/lifetime_probe.c` is the control: about fifty lines, ticking once a
