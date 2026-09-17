@@ -54,6 +54,17 @@ else
   del "ux0:/data/galaxyvita/nogfx.txt"
 fi
 
+# GV_IDLE=1 sets everything up and emulates nothing, which is how "the app was
+# stopped from outside" gets told apart from "the chassis did something fatal".
+if [[ -n "${GV_IDLE:-}" ]]; then
+  : > "$OUT/idle.txt"
+  ftp --ftp-method nocwd -T "$OUT/idle.txt" \
+    "ftp://$IP:1337/ux0:/data/galaxyvita/idle.txt" >/dev/null
+  echo "==> IDLE run: no emulation, watchdog only"
+else
+  del "ux0:/data/galaxyvita/idle.txt"
+fi
+
 echo "==> uploading eboot.bin to $IP"
 ftp --ftp-method nocwd -T "$BUILD/eboot.bin" "ftp://$IP:1337/ux0:/app/$TITLE/eboot.bin"
 cmd "launch $TITLE" >/dev/null || true

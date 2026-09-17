@@ -21,6 +21,7 @@
 
 #define LOG_PATH "ux0:data/galaxyvita/boot.log"
 #define WATCH_PATH "ux0:data/galaxyvita/watchdog.log"
+#define PROBE_PATH "ux0:data/galaxyvita/watchdog.log.probe"
 #define DOL_PATH "ux0:data/galaxyvita/sys/main.dol"
 /* The disc and NAND trees the user's own extraction produces. Neither ships in
  * the VPK; see scripts/extract-disc.sh. */
@@ -37,6 +38,7 @@
  * "is the new backend what stopped the boot?" has to be answerable without
  * building a second binary. */
 #define NOGFX_FLAG "ux0:data/galaxyvita/nogfx.txt"
+#define IDLE_FLAG "ux0:data/galaxyvita/idle.txt"
 /* Blocks, not frames. The host chassis reaches the first real geometry a little
  * past 10M and settles around 60M; anything smaller stops inside the boot. */
 #define BLOCK_CAP 60000000u
@@ -273,10 +275,15 @@ static int watchdog(SceSize args, void *argp) {
    * directly: a fresh open every tick, reported through the held handle. */
   SceUID fd = sceIoOpen(WATCH_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC,
                         0777);
-  if (fd < 0)
-    return 0;
+  int wrote = 0;
+  int probe = 0;
+  u32 lost = 0;
   while (!g_cpu_done) {
-    sceKernelDelayThread(2 * 1000 * 1000);
+    /* The CB form, so this thread is in a state where system callbacks can
+     * actually be delivered. Nothing in this app was: main blocks in
+     * sceKernelWaitThreadEnd and every worker used the plain delay, so no
+     * thread could ever service a system event. */
+    sceKernelDelayThreadCB(2 * 1000 * 1000);
     const Chassis *ch = g_watch;
     char buf[256];
     int n;
@@ -287,23 +294,51 @@ static int watchdog(SceSize args, void *argp) {
     /* This line goes out first, through this thread's own handle, before
      * anything that could block. Whatever else is stuck, the tick is reported. */
     u32 hits = ch->dispatch_hits;
+    /* Free memory, every tick. The boot dies with every thread stopping at
+     * once and the process still resident, which is what running out looks
+     * like from the outside -- and the console is the only place it can
+     * happen, since the host plateaus at 154 MB with room to spare. A trend
+     * towards zero here says so; a flat line rules it out. */
+    SceKernelFreeMemorySizeInfo mem;
+    memset(&mem, 0, sizeof(mem));
+    mem.size = sizeof(mem);
+    if (sceKernelGetFreeMemorySize(&mem) < 0)
+      mem.size_user = mem.size_cdram = mem.size_phycont = -1;
+    /* A fresh open every tick, reported through the held handle. The held
+     * handle exists because per-tick opens once started failing partway into
+     * the boot; this says whether that is happening again, and it is the
+     * difference between "the emulator stopped" and "the card stopped taking
+     * writes", which look identical from the host. */
+    SceUID pfd = sceIoOpen(PROBE_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC,
+                           0777);
+    probe = pfd < 0 ? pfd : 0;
+    if (pfd >= 0)
+      sceIoClose(pfd);
     n = snprintf(buf, sizeof(buf),
-                 "watchdog t=%us hits=%u (+%u) pc=0x%08x fifo=%u mmio_w=%u%s%s\n",
+                 "watchdog t=%us hits=%u (+%u) pc=0x%08x fifo=%u mmio_w=%u "
+                 "free=%dk cdram=%dk phy=%dk wr=%d probe=%d lost=%u%s%s\n",
                  ticks * 2u, hits, hits - last, ch->last_pc, ch->fifo_writes,
-                 ch->mmio_writes, hits == last ? "  STALLED" : "",
+                 ch->mmio_writes, mem.size_user / 1024, mem.size_cdram / 1024,
+                 mem.size_phycont / 1024, wrote, probe, lost,
+                 hits == last ? "  STALLED" : "",
                  log_stuck ? "  LOGLOCKED" : "");
-    int wrote = sceIoWrite(fd, buf, (SceSize)(n > 0 ? n : 0));
+    wrote = sceIoWrite(fd, buf, (SceSize)(n > 0 ? n : 0));
     /* A held handle buffers: without this the last ticks before a wedge sit in
      * the cache and never reach the card, which reads from the host exactly
      * like a thread that stopped running. The whole point of this thread is to
      * be believed about that distinction, so pay for the sync. */
     sceIoSyncByFd(fd, 0);
-    if (wrote < 0) {
-      /* The handle went bad. Reopening costs a tick and keeps the log alive. */
-      sceIoClose(fd);
+    /* Never exit. The previous version returned when a reopen failed, which
+     * made the one thread whose job is to say what happened the first thread
+     * to go quiet -- and "no watchdog output" is indistinguishable from a dead
+     * process, so a recoverable I/O error read as a hung boot. Count the lost
+     * ticks instead and keep trying; the next line that lands reports how many
+     * went missing and what the errors were. */
+    if (wrote < 0 || fd < 0) {
+      lost++;
+      if (fd >= 0)
+        sceIoClose(fd);
       fd = sceIoOpen(WATCH_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
-      if (fd < 0)
-        return 0;
     }
     /* The emulator only flushes when its buffer fills, which during a quiet
      * stretch can be minutes. This keeps the log at most one tick stale -- but
@@ -312,7 +347,55 @@ static int watchdog(SceSize args, void *argp) {
     last = hits;
     ticks++;
   }
-  sceIoClose(fd);
+  if (fd >= 0)
+    sceIoClose(fd);
+  return 0;
+}
+
+/* The system stops an application that never puts anything on screen.
+ *
+ * That is what the "stall" was. Every boot died 10-12 seconds in with every
+ * thread going quiet at once, the process still resident, memory flat and no
+ * core dump -- and it did exactly the same with the emulator doing nothing at
+ * all, which is what finally placed the cause outside the chassis. The guest
+ * does not reach its first XFB copy for a long time yet, so nothing was ever
+ * presented and the app was killed before the boot could get anywhere.
+ *
+ * This holds a black frame up until the GX backend starts presenting real
+ * ones, and then gets out of the way -- sceGxm drives the display itself
+ * through its own queue, and two writers would fight over it. */
+static int display_worker(SceSize args, void *argp) {
+  (void)args;
+  (void)argp;
+  pin_self(AFFINITY_CPU1, "display");
+  SceUID uid = sceKernelAllocMemBlock("gv-heartbeat-fb",
+                                      SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
+                                      2 * 1024 * 1024, NULL);
+  void *fb = NULL;
+  if (uid >= 0 && sceKernelGetMemBlockBase(uid, &fb) < 0)
+    fb = NULL;
+  if (!fb) {
+    log_line("display heartbeat: no framebuffer; the app may be stopped early");
+    return 0;
+  }
+  memset(fb, 0, 2 * 1024 * 1024);
+  log_line("display heartbeat up");
+  while (!g_cpu_done) {
+    if (!g_gfx_ready) {
+      SceDisplayFrameBuf f;
+      memset(&f, 0, sizeof(f));
+      f.size = sizeof(f);
+      f.base = fb;
+      f.pitch = 960;
+      f.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
+      f.width = 960;
+      f.height = 544;
+      sceDisplaySetFrameBuf(&f, SCE_DISPLAY_SETBUF_NEXTFRAME);
+      sceDisplayWaitVblankStart();
+    } else {
+      sceKernelDelayThread(100 * 1000);
+    }
+  }
   return 0;
 }
 
@@ -322,7 +405,7 @@ static int audio_worker(SceSize args, void *argp) {
   pin_self(AFFINITY_CPU2, "audio-io");
   log_line("audio-io null backend");
   while (!g_cpu_done)
-    sceKernelDelayThread(1000 * 1000);
+    sceKernelDelayThreadCB(1000 * 1000);
   return 0;
 }
 
@@ -460,6 +543,25 @@ static int run_aot(SceSize args, void *argp) {
 no_gfx:
   g_watch = &ch;
   chassis_set_input_fn(&ch, vita_pad, NULL);
+  /* idle.txt runs the whole setup and then emulates nothing. Everything the
+   * boot dies alongside -- every thread going quiet at once, the process still
+   * resident, memory flat, no core dump -- is also what an app being suspended
+   * from outside looks like, and the two are indistinguishable from the host.
+   * If the watchdog keeps ticking here for a minute then nothing about this
+   * app or this device stops it, and the cause is in what the chassis does. */
+  {
+    SceIoStat ist;
+    memset(&ist, 0, sizeof(ist));
+    if (sceIoGetstat(IDLE_FLAG, &ist) >= 0) {
+      log_line("idle: emulating nothing, holding for 60s");
+      log_flush();
+      for (int i = 0; i < 60; i++)
+        sceKernelDelayThread(1000 * 1000);
+      log_line("idle: held 60s without being stopped");
+      log_flush();
+      return 0;
+    }
+  }
   chassis_run(&ch, BLOCK_CAP);
 
   snprintf(buf, sizeof(buf),
@@ -496,13 +598,14 @@ int main(void) {
   g_mem1 = vita_rw("gv-mem1", GC_MAIN_RAM_SIZE, &g_mem1_uid);
   g_mem2 = vita_rw("gv-mem2", WII_MEM2_SIZE, &g_mem2_uid);
 
+  spawn("display", display_worker, AFFINITY_CPU1);
   spawn("audio-io", audio_worker, AFFINITY_CPU2);
   spawn("watchdog", watchdog, AFFINITY_CPU2);
 
   {
     SceUID cpu = spawn_sized("cpu-aot", run_aot, AFFINITY_CPU0, AOT_STACK);
     if (cpu >= 0)
-      sceKernelWaitThreadEnd(cpu, NULL, NULL);
+      sceKernelWaitThreadEndCB(cpu, NULL, NULL);
     else
       log_line("could not create the AOT thread");
   }
