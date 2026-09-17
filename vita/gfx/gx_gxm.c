@@ -151,6 +151,14 @@ typedef struct {
   int init_rc;
   unsigned tex_init_mode;
   int last_tex_w, last_tex_h;
+  /* The texture the final draw of a frame used, sampled when the frame is
+   * copied out. The selftest proves GXM texturing works here, so a white
+   * frame is now about which draw ends up on top -- and the cache holds an
+   * 8x8 image that is solid white, which drawn last over everything would
+   * look exactly like no texturing at all. Counting draws by texture size
+   * says whether that is what is happening. */
+  int final_tex_w, final_tex_h;
+  unsigned draws_tex_tiny, draws_tex_big, draws_untex;
   /* The range of texture coordinates that actually arrived. A
    * correct texture that every fragment samples at one point is
    * indistinguishable from a broken sampler in a frame dump, and
@@ -856,6 +864,12 @@ static void on_prim_end(void *user) {
                                         : g.fragment_program);
       g.bound = tex;
     }
+    if (!tex)
+      g.draws_untex++;
+    else if (tex->w <= 16 && tex->h <= 16)
+      g.draws_tex_tiny++;
+    else
+      g.draws_tex_big++;
     if (tex) {
       const int rc = sceGxmSetFragmentTexture(ctx, g.sampler_index, &tex->tex);
       if (rc < 0)
@@ -928,6 +942,10 @@ static void on_copy(void *user, u32 data) {
   if (!((data >> 14) & 1u))
     return;
 
+  /* Whatever was bound last is what the topmost draw of this frame used. */
+  g.final_tex_w = g.last_tex_w;
+  g.final_tex_h = g.last_tex_h;
+
   {
     unsigned wh = f->bp[0x4A];
     unsigned w = (wh & 0x3FFu) + 1u;
@@ -978,7 +996,7 @@ void gx_gxm_report(char *out, unsigned n) {
            "gxm frames=%u scenes=%u draws=%u vtx=%u drop_full=%u "
            "drop_nomtx=%u drop_novp=%u drop_prim=%u scale=%.3f copy=%ux%u "
            "dumped=%u tex=%u/%u arena=%uk miss_unmap=%u miss_fmt=%u "
-           "miss_space=%u smp=%u fdbg=%u bind=0x%08x init=0x%08x valid=0x%08x imode=%u last=%dx%d uv=[%.3f %.3f]-[%.3f %.3f]",
+           "miss_space=%u smp=%u fdbg=%u bind=0x%08x init=0x%08x valid=0x%08x imode=%u last=%dx%d fin=%dx%d dtiny=%u dbig=%u duntex=%u uv=[%.3f %.3f]-[%.3f %.3f]",
            g.frames, g.scenes, g.draws, g.verts, g.dropped_full,
            g.dropped_nomatrix, g.dropped_novp, g.dropped_unsupported,
            (double)g.scale, g.copy_w, g.copy_h, g.dumped, g.textured_draws,
@@ -986,7 +1004,8 @@ void gx_gxm_report(char *out, unsigned n) {
            g.tex_unsupported, g.tex_nospace, g.sampler_index,
            g.frag_mode, (unsigned)g.set_tex_rc, (unsigned)g.init_rc,
            (unsigned)g.validate_rc, g.tex_init_mode,
-           g.last_tex_w, g.last_tex_h,
+           g.last_tex_w, g.last_tex_h, g.final_tex_w, g.final_tex_h,
+           g.draws_tex_tiny, g.draws_tex_big, g.draws_untex,
            (double)g.uv_lo[0], (double)g.uv_lo[1], (double)g.uv_hi[0],
            (double)g.uv_hi[1]);
 }

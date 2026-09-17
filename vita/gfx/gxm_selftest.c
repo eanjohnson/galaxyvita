@@ -268,12 +268,19 @@ typedef struct {
 } Probe;
 
 /* The textured frame. EFB y is down, and v was given top-down, so the texture's
- * top-left quadrant belongs at the top-left of the quad. */
+ * top-left quadrant belongs at the top-left of the quad.
+ *
+ * The expected values are the quadrant colours *after* the RGB565 round trip,
+ * not the ones build_texture() starts from: 0x20 does not survive five bits
+ * and comes back as 0x21. Writing the source colours here made a correct
+ * render report four mismatches that were each one bit wide, which is how a
+ * working GPU gets blamed. These are what gx_tex_decode() actually produces,
+ * confirmed on the host before the console was asked. */
 static const Probe k_tex_probes[] = {
-    {"tex top-left", 0.25f * EFB_W, 0.25f * EFB_H, 0xFF, 0x20, 0x20},
-    {"tex top-right", 0.75f * EFB_W, 0.25f * EFB_H, 0x20, 0xFF, 0x20},
-    {"tex bottom-left", 0.25f * EFB_W, 0.75f * EFB_H, 0x20, 0x20, 0xFF},
-    {"tex bottom-right", 0.75f * EFB_W, 0.75f * EFB_H, 0xFF, 0xFF, 0x20},
+    {"tex top-left", 0.25f * EFB_W, 0.25f * EFB_H, 0xFF, 0x20, 0x21},
+    {"tex top-right", 0.75f * EFB_W, 0.25f * EFB_H, 0x21, 0xFF, 0x21},
+    {"tex bottom-left", 0.25f * EFB_W, 0.75f * EFB_H, 0x21, 0x20, 0xFF},
+    {"tex bottom-right", 0.75f * EFB_W, 0.75f * EFB_H, 0xFF, 0xFF, 0x21},
 };
 
 static const Probe k_probes[] = {
