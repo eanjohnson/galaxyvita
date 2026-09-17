@@ -2,6 +2,74 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-17 — Profiled for the first time: 2.11x on the host, and the console is still unexplained
+
+Nothing here had ever been profiled. Every performance statement in this
+repository was inferred from a block counter, and the one optimisation in its
+history -- inlining the cache-maintenance no-ops -- was found by reading a
+hot-PC list, not by measuring where time went.
+
+`perf` is not available here and `-pg` distorts exactly the thing being
+measured, so the chassis samples itself: `SIGPROF` on a 1 kHz `ITIMER_PROF`
+timer, the host PC out of the signal's `ucontext`, raw PCs resolved afterwards
+against the symbol table. `GV_PROF` names the file. `ITIMER_PROF` and not
+`ITIMER_REAL`, so a run blocked on I/O does not accumulate samples it never
+spent executing.
+
+The answer was not where anyone would have guessed:
+
+| | before | after |
+|---|---|---|
+| `mem_read32` | **47.01%** | (inlined) |
+| `resolve_addr` | **13.79%** | 0.80% |
+| recompiled guest code | 24.91% | **75.37%** |
+| GX decode | 0.33% | 0.49% |
+
+Most of the emulator's time went on working out *where guest memory was*. The
+cost was structural rather than algorithmic: recompiled chunks are separate
+translation units and the accessors live in `cpu.c`, so each of roughly seven
+hundred accesses per chunk was a real call into another object file, with a
+four-way range check inside it and nothing foldable into the caller.
+
+The fast path is now inline in DolRecomp's header and covers cached MEM1 --
+one subtraction, one unsigned compare catching underflow and overrun together,
+a byte-swapped load. Everything else falls through to the original code, now
+named `*_slow`, so uncommon paths keep exactly the behaviour they had. Stores
+take it only with no reservation outstanding and no write journal installed.
+
+**2.11x on the host** -- 16.0s to 7.6s of CPU for the same 40M-block boot --
+with output identical to the byte: hits, FIFO writes, MMIO counts, retraces and
+GX command count all unchanged. Vita `.text` grows 51.88 -> 61.43 MiB against a
+280 MiB budget.
+
+**On the console it does not show, and that is the interesting part.** Three
+runs, measured at the same wall-clock marks:
+
+| | t=2s | t=4s | t=6s | t=8s | t=10s |
+|---|---|---|---|---|---|
+| before | 95,768 | 315,763 | 583,367 | 978,670 | 1,043,487 |
+| after | 95,963 | 415,436 | 660,403 | 978,670 | 1,050,765 |
+| after, no graphics | 96,285 | 490,992 | 843,775 | 1,041,729 | 1,094,243 |
+
+The gain is real in the middle of the window -- 20-30%, and another 25% with
+the GXM backend off -- but every run converges on a plateau and then collapses
+to 35-50k blocks/s. The collapse happens with graphics disabled too, so it is
+not only the renderer.
+
+What was ruled out rather than assumed: file I/O is **408 ms out of ten
+seconds**, 4%, now that the watchdog reports it. The emulated timebase is
+derived from cycles, not wall clock, so nothing is pacing to real time.
+
+What is still unknown is the console's steady-state speed, because the
+14-second `launch` cap cannot reach the compute-bound phase, and the host
+profiler does not port -- the Vita has no `SIGPROF`. An on-device profile needs
+a sampling thread reading a phase written by the emulation thread, and the
+measurement needs a LiveArea launch to run long enough to mean anything.
+
+So: the host is 2.11x faster and the console is not yet explained. Real-time
+is about 4M blocks/s (200M blocks is 50 s of Wii time, confirmed against both
+the emulated timebase and the frame counter). The console is doing 35-100k.
+
 ## 2026-09-17 — Title screen and file select; the gate was the Nunchuk
 
 The connect-a-remote screen was a deadlock of our own making. The status
