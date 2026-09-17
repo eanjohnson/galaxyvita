@@ -14,10 +14,14 @@
  * near-plane clipping and perspective-correct interpolation are the hardware's
  * rather than ours.
  *
- * What is NOT here yet: TEV, texturing, lighting and the per-draw blend/depth
- * state. Those are what Dolphin's generated shaders are for, and they need the
- * shader cache warmed by UID first. Geometry and the transform come first
- * because they are what a wrong answer is visible in. */
+ * Map 0 texturing, the per-draw blend and depth state (BP 0x40 and 0x41) and
+ * the alpha test (BP 0xF3) are here; the texture is modulated by the raster
+ * colour, which is what tests/host/gx_soft.c does in place of TEV so the two
+ * renderers still diff frame for frame.
+ *
+ * What is NOT here yet: TEV proper, the maps past the first, lighting, and the
+ * scissor rectangle. Those are what Dolphin's generated shaders are for, and
+ * they need the shader cache warmed by UID first. */
 
 /* regs is the live register file; it must outlive the sink. Returns 0 and
  * leaves gx_gxm_error() set on failure. */

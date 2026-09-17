@@ -49,7 +49,7 @@ typedef struct {
  *
  * The name a program is cached under has to change whenever this source does,
  * or the first run's blob would be loaded forever. */
-#define GV_PASSTHROUGH_VERSION "v1"
+#define GV_PASSTHROUGH_VERSION "v2"
 
 
 static const char k_vertex_cg[] =
@@ -66,10 +66,42 @@ static const char k_vertex_cg[] =
     "  vTexcoord = aTexcoord;\n"
     "}\n";
 
+/* Alpha test, BP 0xF3, as arithmetic rather than as shader variants.
+ *
+ * GX compares the fragment's alpha against two references and combines the
+ * two answers with a logic op: 8 comparisons each and 4 ops, which as compiled
+ * variants would be hundreds of shaders -- and ShaccCg wedges after five to
+ * nine compiles in one process, so a variant per state is not something this
+ * can afford. Instead each comparison is a dot product over (a<ref, a==ref,
+ * a>ref, 1) with a weight vector the CPU picks, and the logic op is a second
+ * weighted sum over (1, r0, r1, r0*r1). The uniforms carry the state, one
+ * shader covers every combination, and -- deliberately -- all-zero uniforms
+ * mean "kill nothing", so a failed upload degrades to the old behaviour
+ * rather than to an empty frame. */
 static const char k_fragment_cg[] =
-    "float4 main(float4 vColor : COLOR) : COLOR\n"
+    "float4 main(float4 vColor : COLOR,\n"
+"            uniform float4 uAlphaRef,\n"
+"            uniform float4 uAlphaW0,\n"
+"            uniform float4 uAlphaW1,\n"
+"            uniform float4 uAlphaOp) : COLOR\n"
     "{\n"
-    "  return vColor;\n"
+    "  float4 c = vColor;\n"
+"  float a = c.w;\n"
+"  float e = uAlphaRef.z;\n"
+"  float l0 = step(e, uAlphaRef.x - a);\n"
+"  float g0 = step(e, a - uAlphaRef.x);\n"
+"  float q0 = 1.0 - max(l0, g0);\n"
+"  float r0 = uAlphaW0.x * l0 + uAlphaW0.y * q0 + uAlphaW0.z * g0\n"
+"           + uAlphaW0.w;\n"
+"  float l1 = step(e, uAlphaRef.y - a);\n"
+"  float g1 = step(e, a - uAlphaRef.y);\n"
+"  float q1 = 1.0 - max(l1, g1);\n"
+"  float r1 = uAlphaW1.x * l1 + uAlphaW1.y * q1 + uAlphaW1.z * g1\n"
+"           + uAlphaW1.w;\n"
+"  float k = uAlphaOp.x + uAlphaOp.y * r0 + uAlphaOp.z * r1\n"
+"          + uAlphaOp.w * r0 * r1;\n"
+"  if (k > 0.5) discard;\n"
+    "  return c;\n"
     "}\n";
 
 /* The textured half of the same pipeline. Modulating the sampled texel by the
@@ -101,9 +133,29 @@ static const char k_fragment_texonly_cg[] =
 
 static const char k_fragment_tex_cg[] =
     "float4 main(float4 vColor : COLOR, float2 vTexcoord : TEXCOORD0,\n"
-    "            uniform sampler2D sTex : TEXUNIT0) : COLOR\n"
+    "            uniform sampler2D sTex : TEXUNIT0,\n"
+"            uniform float4 uAlphaRef,\n"
+"            uniform float4 uAlphaW0,\n"
+"            uniform float4 uAlphaW1,\n"
+"            uniform float4 uAlphaOp) : COLOR\n"
     "{\n"
-    "  return tex2D(sTex, vTexcoord) * vColor;\n"
+    "  float4 c = tex2D(sTex, vTexcoord) * vColor;\n"
+"  float a = c.w;\n"
+"  float e = uAlphaRef.z;\n"
+"  float l0 = step(e, uAlphaRef.x - a);\n"
+"  float g0 = step(e, a - uAlphaRef.x);\n"
+"  float q0 = 1.0 - max(l0, g0);\n"
+"  float r0 = uAlphaW0.x * l0 + uAlphaW0.y * q0 + uAlphaW0.z * g0\n"
+"           + uAlphaW0.w;\n"
+"  float l1 = step(e, uAlphaRef.y - a);\n"
+"  float g1 = step(e, a - uAlphaRef.y);\n"
+"  float q1 = 1.0 - max(l1, g1);\n"
+"  float r1 = uAlphaW1.x * l1 + uAlphaW1.y * q1 + uAlphaW1.z * g1\n"
+"           + uAlphaW1.w;\n"
+"  float k = uAlphaOp.x + uAlphaOp.y * r0 + uAlphaOp.z * r1\n"
+"          + uAlphaOp.w * r0 * r1;\n"
+"  if (k > 0.5) discard;\n"
+    "  return c;\n"
     "}\n";
 
 /* Decoded textures, kept for the life of the run.
@@ -118,6 +170,15 @@ static const char k_fragment_tex_cg[] =
  * The pixels come out of one arena rather than a memblock each, because a Vita
  * memblock rounds up to 4 KB and the UI atlases are mostly smaller than that. */
 enum { TEX_CACHE = 512, TEX_ARENA_BYTES = 24u * 1024u * 1024u };
+/* Distinct blend states seen in a run. GX has 8x8 factor pairs times enable
+ * times colour-update times textured, but a frame uses a handful; anything
+ * past this falls back to the fixed program rather than failing the draw. */
+enum { FRAG_VARIANTS = 64 };
+
+typedef struct {
+  unsigned key;
+  SceGxmFragmentProgram *prog;
+} GvFragProg;
 
 typedef struct {
   u32 addr, fmt;
@@ -133,6 +194,23 @@ typedef struct {
   SceGxmVertexProgram *vertex_program;
   SceGxmFragmentProgram *fragment_program;
   SceGxmFragmentProgram *fragment_tex_program;
+  const SceGxmProgram *vs; /* the vertex program the fragment halves match */
+  /* One fragment program per blend state, built on demand. The blend mode is
+   * baked into a GXM fragment program, so per-draw blending means per-draw
+   * program selection; they are all patched from the same two compiled
+   * shaders, so none of this costs a ShaccCg compile. */
+  GvFragProg frag[FRAG_VARIANTS];
+  unsigned frag_n;
+  int frag_rc;
+  SceGxmFragmentProgram *prog_bound;
+  /* uAlpha* parameters, [0] untextured and [1] textured. */
+  const SceGxmProgramParameter *u_ref[2], *u_w0[2], *u_w1[2], *u_op[2];
+  unsigned depth_func, depth_write;
+  int depth_valid;
+  /* The GX state the last draw of the frame went out under, so a frame that
+   * comes back wrong says which register produced it. */
+  u32 last_bmode, last_zmode, last_amode;
+  unsigned draws_blend, draws_nocolor, draws_atest;
 
   unsigned char *tex_arena;
   SceUID tex_arena_uid;
@@ -152,11 +230,9 @@ typedef struct {
   unsigned tex_init_mode;
   int last_tex_w, last_tex_h;
   /* The texture the final draw of a frame used, sampled when the frame is
-   * copied out. The selftest proves GXM texturing works here, so a white
-   * frame is now about which draw ends up on top -- and the cache holds an
-   * 8x8 image that is solid white, which drawn last over everything would
-   * look exactly like no texturing at all. Counting draws by texture size
-   * says whether that is what is happening. */
+   * copied out, and the draws of each frame counted by the size of what they
+   * sampled. Between them they say which draw ends up on top, which is the
+   * question a frame dump cannot answer on its own. */
   int final_tex_w, final_tex_h;
   unsigned draws_tex_tiny, draws_tex_big, draws_untex;
   /* The range of texture coordinates that actually arrived. A
@@ -341,6 +417,7 @@ static int build_pipeline(void) {
   stream.stride = sizeof(GvVert);
   stream.indexSource = SCE_GXM_INDEX_SOURCE_INDEX_32BIT;
 
+  g.vs = vs;
   rc = sceGxmShaderPatcherCreateVertexProgram(patcher, g.vertex_id, attrs, 3,
                                               &stream, 1, &g.vertex_program);
   if (rc < 0) {
@@ -348,10 +425,10 @@ static int build_pipeline(void) {
     return 0;
   }
 
-  /* Source-alpha blending is the one piece of per-draw state kept fixed here:
-   * without it the interface layers over the top of the frame would punch
-   * black holes in it, which reads as a geometry bug rather than a missing
-   * blend mode. The real per-draw state comes with the TEV pipeline. */
+  /* Source-alpha blending, as the starting state only. Every draw picks its
+   * own program out of frag_program() below; these two exist so that the
+   * clear has something bound before the first draw chooses, and as the
+   * fallback if the variant cache ever fills. */
   memset(&blend, 0, sizeof(blend));
   blend.colorMask = SCE_GXM_COLOR_MASK_ALL;
   blend.colorFunc = SCE_GXM_BLEND_FUNC_ADD;
@@ -418,7 +495,193 @@ static int build_pipeline(void) {
   }
   g.sampler_index =
       p_smp ? (unsigned)sceGxmProgramParameterGetResourceIndex(p_smp) : 0u;
+
+  /* The alpha-test uniforms, looked up rather than assumed: a debug fragment
+   * variant does not carry them at all, and a missing one simply means the
+   * test is not applied to that program instead of an error. */
+  {
+    const SceGxmProgram *const prog[2] = {fs, fs_tex};
+    unsigned i;
+    for (i = 0; i < 2u; i++) {
+      g.u_ref[i] = sceGxmProgramFindParameterByName(prog[i], "uAlphaRef");
+      g.u_w0[i] = sceGxmProgramFindParameterByName(prog[i], "uAlphaW0");
+      g.u_w1[i] = sceGxmProgramFindParameterByName(prog[i], "uAlphaW1");
+      g.u_op[i] = sceGxmProgramFindParameterByName(prog[i], "uAlphaOp");
+    }
+  }
   return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Per-draw GX state: BLENDMODE (BP 0x41), ZMODE (BP 0x40), alpha test
+ * (BP 0xF3). tests/host/gx_soft.c already learned why these matter -- its
+ * own comment says it outright: "Without these a 2D overlay drawn last paints
+ * over the whole frame." That is exactly the white rectangle this backend
+ * draws, so the state the host reads is the state this reads. */
+
+/* BP 0x41 bits 8-10, the source factor. 2 and 3 name the destination there. */
+static unsigned gx_src_factor(u32 sel) {
+  switch (sel & 7u) {
+  case 0: return SCE_GXM_BLEND_FACTOR_ZERO;
+  case 1: return SCE_GXM_BLEND_FACTOR_ONE;
+  case 2: return SCE_GXM_BLEND_FACTOR_DST_COLOR;
+  case 3: return SCE_GXM_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+  case 4: return SCE_GXM_BLEND_FACTOR_SRC_ALPHA;
+  case 5: return SCE_GXM_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  case 6: return SCE_GXM_BLEND_FACTOR_DST_ALPHA;
+  default: return SCE_GXM_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+  }
+}
+
+/* BP 0x41 bits 5-7, the destination factor. 2 and 3 name the source there. */
+static unsigned gx_dst_factor(u32 sel) {
+  switch (sel & 7u) {
+  case 0: return SCE_GXM_BLEND_FACTOR_ZERO;
+  case 1: return SCE_GXM_BLEND_FACTOR_ONE;
+  case 2: return SCE_GXM_BLEND_FACTOR_SRC_COLOR;
+  case 3: return SCE_GXM_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+  case 4: return SCE_GXM_BLEND_FACTOR_SRC_ALPHA;
+  case 5: return SCE_GXM_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  case 6: return SCE_GXM_BLEND_FACTOR_DST_ALPHA;
+  default: return SCE_GXM_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+  }
+}
+
+static SceGxmFragmentProgram *frag_program(int textured, u32 bmode) {
+  SceGxmFragmentProgram *const fallback =
+      textured ? g.fragment_tex_program : g.fragment_program;
+  const unsigned en = bmode & 1u;
+  const unsigned cup = (bmode >> 3) & 1u;
+  const unsigned dfac = (bmode >> 5) & 7u;
+  const unsigned sfac = (bmode >> 8) & 7u;
+  const unsigned key = en | (cup << 1) | (dfac << 2) | (sfac << 5) |
+                       ((unsigned)(textured != 0) << 8);
+  SceGxmBlendInfo blend;
+  unsigned i;
+  int rc;
+
+  for (i = 0; i < g.frag_n; i++)
+    if (g.frag[i].key == key)
+      return g.frag[i].prog;
+  if (g.frag_n >= FRAG_VARIANTS || !g.vs)
+    return fallback;
+
+  memset(&blend, 0, sizeof(blend));
+  /* Alpha is deliberately not written. The host rasteriser leaves the frame's
+   * alpha at 0xFF whatever a draw does, and the clear here writes 0xFF too, so
+   * masking alpha off keeps the two frame dumps comparable byte for byte
+   * instead of leaving the console's alpha wherever the last draw put it. */
+  blend.colorMask = cup ? (SceGxmColorMask)(SCE_GXM_COLOR_MASK_R |
+                                            SCE_GXM_COLOR_MASK_G |
+                                            SCE_GXM_COLOR_MASK_B)
+                        : SCE_GXM_COLOR_MASK_NONE;
+  blend.colorFunc = SCE_GXM_BLEND_FUNC_ADD;
+  blend.alphaFunc = SCE_GXM_BLEND_FUNC_ADD;
+  blend.colorSrc = en ? (SceGxmBlendFactor)gx_src_factor(sfac)
+                      : SCE_GXM_BLEND_FACTOR_ONE;
+  blend.colorDst = en ? (SceGxmBlendFactor)gx_dst_factor(dfac)
+                      : SCE_GXM_BLEND_FACTOR_ZERO;
+  blend.alphaSrc = SCE_GXM_BLEND_FACTOR_ZERO;
+  blend.alphaDst = SCE_GXM_BLEND_FACTOR_ONE;
+
+  rc = sceGxmShaderPatcherCreateFragmentProgram(
+      gxm_patcher(), textured ? g.fragment_tex_id : g.fragment_id,
+      SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4, SCE_GXM_MULTISAMPLE_NONE, &blend,
+      g.vs, &g.frag[g.frag_n].prog);
+  if (rc < 0) {
+    g.frag_rc = rc;
+    return fallback;
+  }
+  g.frag[g.frag_n].key = key;
+  return g.frag[g.frag_n++].prog;
+}
+
+/* One GX alpha comparison as weights over (a < ref, a == ref, a > ref, 1). */
+static void alpha_weights(u32 comp, float *w) {
+  w[0] = w[1] = w[2] = w[3] = 0.0f;
+  switch (comp & 7u) {
+  case 0: break;                                /* never */
+  case 1: w[0] = 1.0f; break;                   /* less */
+  case 2: w[1] = 1.0f; break;                   /* equal */
+  case 3: w[0] = 1.0f; w[1] = 1.0f; break;      /* lequal */
+  case 4: w[2] = 1.0f; break;                   /* greater */
+  case 5: w[0] = 1.0f; w[2] = 1.0f; break;      /* nequal */
+  case 6: w[1] = 1.0f; w[2] = 1.0f; break;      /* gequal */
+  default: w[3] = 1.0f; break;                  /* always */
+  }
+}
+
+/* BP 0xF3 for "compare always, and always, keep everything". The default
+ * uniform buffer GXM hands out is not cleared, so a draw that never uploads
+ * its own alpha state tests against whatever the last scene left in that
+ * memory -- which killed the clear itself and left the frame showing the
+ * previous contents of the buffer. Every program that can discard uploads a
+ * state before it is first used. */
+#define GX_ALPHA_ALWAYS 0x003F0000u
+
+static void set_alpha_uniforms_reg(int textured, u32 reg) {
+  SceGxmContext *const ctx = gxm_context();
+  const int i = textured ? 1 : 0;
+  float ref[4], w0[4], w1[4], op[4];
+  void *buf = NULL;
+
+  if (!g.u_ref[i] || !g.u_w0[i] || !g.u_w1[i] || !g.u_op[i])
+    return;
+  ref[0] = (float)(reg & 0xFFu) * (1.0f / 255.0f);
+  ref[1] = (float)((reg >> 8) & 0xFFu) * (1.0f / 255.0f);
+  ref[2] = 0.5f / 255.0f; /* half a step, so "equal" survives interpolation */
+  ref[3] = 0.0f;
+  alpha_weights((reg >> 16) & 7u, w0);
+  alpha_weights((reg >> 19) & 7u, w1);
+  /* The op weights are written for the kill, not the pass, so that uniforms
+   * that never arrived leave every fragment alive. */
+  switch ((reg >> 22) & 3u) {
+  case 0: op[0] = 1.0f; op[1] = 0.0f; op[2] = 0.0f; op[3] = -1.0f; break;
+  case 1: op[0] = 1.0f; op[1] = -1.0f; op[2] = -1.0f; op[3] = 1.0f; break;
+  case 2: op[0] = 1.0f; op[1] = -1.0f; op[2] = -1.0f; op[3] = 2.0f; break;
+  default: op[0] = 0.0f; op[1] = 1.0f; op[2] = 1.0f; op[3] = -2.0f; break;
+  }
+  if (sceGxmReserveFragmentDefaultUniformBuffer(ctx, &buf) < 0 || !buf)
+    return;
+  sceGxmSetUniformDataF(buf, g.u_ref[i], 0, 4, ref);
+  sceGxmSetUniformDataF(buf, g.u_w0[i], 0, 4, w0);
+  sceGxmSetUniformDataF(buf, g.u_w1[i], 0, 4, w1);
+  sceGxmSetUniformDataF(buf, g.u_op[i], 0, 4, op);
+}
+
+static void set_alpha_uniforms(int textured) {
+  set_alpha_uniforms_reg(textured, g.regs ? g.regs->bp[0xF3u] : 0u);
+}
+
+static void set_depth_state(u32 zmode) {
+  SceGxmContext *const ctx = gxm_context();
+  const unsigned test = zmode & 1u;
+  const unsigned write = (zmode >> 4) & 1u;
+  unsigned func;
+
+  switch (test ? ((zmode >> 1) & 7u) : 7u) {
+  case 0: func = SCE_GXM_DEPTH_FUNC_NEVER; break;
+  case 1: func = SCE_GXM_DEPTH_FUNC_LESS; break;
+  case 2: func = SCE_GXM_DEPTH_FUNC_EQUAL; break;
+  case 3: func = SCE_GXM_DEPTH_FUNC_LESS_EQUAL; break;
+  case 4: func = SCE_GXM_DEPTH_FUNC_GREATER; break;
+  case 5: func = SCE_GXM_DEPTH_FUNC_NOT_EQUAL; break;
+  case 6: func = SCE_GXM_DEPTH_FUNC_GREATER_EQUAL; break;
+  default: func = SCE_GXM_DEPTH_FUNC_ALWAYS; break;
+  }
+  if (!g.depth_valid || func != g.depth_func) {
+    sceGxmSetFrontDepthFunc(ctx, (SceGxmDepthFunc)func);
+    sceGxmSetBackDepthFunc(ctx, (SceGxmDepthFunc)func);
+    g.depth_func = func;
+  }
+  if (!g.depth_valid || write != g.depth_write) {
+    const SceGxmDepthWriteMode w =
+        write ? SCE_GXM_DEPTH_WRITE_ENABLED : SCE_GXM_DEPTH_WRITE_DISABLED;
+    sceGxmSetFrontDepthWriteEnable(ctx, w);
+    sceGxmSetBackDepthWriteEnable(ctx, w);
+    g.depth_write = write;
+  }
+  g.depth_valid = 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -733,6 +996,11 @@ static void begin_scene_if_needed(void) {
   sceGxmSetVertexProgram(ctx, g.vertex_program);
   sceGxmSetFragmentProgram(ctx, g.fragment_program);
   g.bound = NULL;
+  /* The clear below moves the depth state, and the per-draw state is only
+   * pushed when it changes, so both caches start each scene empty. */
+  g.prog_bound = g.fragment_program;
+  g.depth_valid = 0;
+  set_alpha_uniforms_reg(0, GX_ALPHA_ALWAYS);
   sceGxmSetCullMode(ctx, SCE_GXM_CULL_NONE);
   clear_screen();
   sceGxmSetFrontDepthFunc(ctx, SCE_GXM_DEPTH_FUNC_LESS_EQUAL);
@@ -885,11 +1153,25 @@ static void on_prim_end(void *user) {
    * pushed to the context when they actually change. */
   {
     const GvTex *tex = bind_texture();
-    if (tex != g.bound) {
-      sceGxmSetFragmentProgram(ctx, tex ? g.fragment_tex_program
-                                        : g.fragment_program);
-      g.bound = tex;
+    const u32 bmode = g.regs ? g.regs->bp[0x41u] : 0u;
+    const u32 zmode = g.regs ? g.regs->bp[0x40u] : 0u;
+    SceGxmFragmentProgram *const prog = frag_program(tex != NULL, bmode);
+    if (prog != g.prog_bound) {
+      sceGxmSetFragmentProgram(ctx, prog);
+      g.prog_bound = prog;
     }
+    g.bound = tex;
+    set_alpha_uniforms(tex != NULL);
+    set_depth_state(zmode);
+    g.last_bmode = bmode;
+    g.last_zmode = zmode;
+    g.last_amode = g.regs ? g.regs->bp[0xF3u] : 0u;
+    if (bmode & 1u)
+      g.draws_blend++;
+    if (!((bmode >> 3) & 1u))
+      g.draws_nocolor++;
+    if (((g.last_amode >> 16) & 7u) != 7u || ((g.last_amode >> 19) & 7u) != 7u)
+      g.draws_atest++;
     if (!tex)
       g.draws_untex++;
     else if (tex->w <= 16 && tex->h <= 16)
@@ -1003,6 +1285,7 @@ void gx_gxm_flush_textures(void) {
   g.tex_arena_used = 0;
   g.tex_decoded = 0;
   g.bound = NULL;
+  g.prog_bound = NULL;
   memset(g.tex, 0, sizeof(g.tex));
 }
 
@@ -1022,16 +1305,19 @@ void gx_gxm_report(char *out, unsigned n) {
            "gxm frames=%u scenes=%u draws=%u vtx=%u drop_full=%u "
            "drop_nomtx=%u drop_novp=%u drop_prim=%u scale=%.3f copy=%ux%u "
            "dumped=%u tex=%u/%u arena=%uk miss_unmap=%u miss_fmt=%u "
-           "miss_space=%u smp=%u fdbg=%u bind=0x%08x init=0x%08x valid=0x%08x imode=%u last=%dx%d fin=%dx%d dtiny=%u dbig=%u duntex=%u uv=[%.3f %.3f]-[%.3f %.3f]",
+           "miss_space=%u smp=%u fdbg=%u last=%dx%d fin=%dx%d dtiny=%u "
+           "dbig=%u duntex=%u bm=%08x zm=%08x am=%08x fvar=%u frc=0x%08x "
+           "dblend=%u dnocol=%u datest=%u uv=[%.3f %.3f]-[%.3f %.3f]",
            g.frames, g.scenes, g.draws, g.verts, g.dropped_full,
            g.dropped_nomatrix, g.dropped_novp, g.dropped_unsupported,
            (double)g.scale, g.copy_w, g.copy_h, g.dumped, g.textured_draws,
            g.tex_decoded, g.tex_arena_used / 1024u, g.tex_unmapped,
            g.tex_unsupported, g.tex_nospace, g.sampler_index,
-           g.frag_mode, (unsigned)g.set_tex_rc, (unsigned)g.init_rc,
-           (unsigned)g.validate_rc, g.tex_init_mode,
-           g.last_tex_w, g.last_tex_h, g.final_tex_w, g.final_tex_h,
-           g.draws_tex_tiny, g.draws_tex_big, g.draws_untex,
+           g.frag_mode, g.last_tex_w, g.last_tex_h, g.final_tex_w,
+           g.final_tex_h, g.draws_tex_tiny, g.draws_tex_big, g.draws_untex,
+           (unsigned)g.last_bmode, (unsigned)g.last_zmode,
+           (unsigned)g.last_amode, g.frag_n, (unsigned)g.frag_rc,
+           g.draws_blend, g.draws_nocolor, g.draws_atest,
            (double)g.uv_lo[0], (double)g.uv_lo[1], (double)g.uv_hi[0],
            (double)g.uv_hi[1]);
 }
