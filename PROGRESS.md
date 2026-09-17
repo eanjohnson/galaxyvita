@@ -2,6 +2,78 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-17 — Display lists were being submitted as commands; the boot reaches file select
+
+The boot froze at identical numbers across 55M- and 70M-block runs, and the
+built-in report pinned it exactly: `gx first unknown opcode:
+stream_byte=4456810 ... value=0x02 ... cmds=643902`. `0x02` is not a GX
+opcode.
+
+This read like a decode bug and was not one. An independent reference walker,
+written from the GX command encoding and run over the whole 4.46 MB capture
+with no help from our code, reached the same byte and computed the same
+16-byte vertex stride. The decode was right about a stream that should never
+have contained those bytes.
+
+What the stream actually said was stranger than a bad opcode:
+
+- **zero display lists** in 4.46 MB, in a game built out of them;
+- array bases (CP `0xA0`-`0xBF`) written exactly once, at `GXInit`;
+- only two vertex descriptors ever used, both direct-float;
+- and then, at byte 4456550, three-byte vertices whose first two bytes are
+  equal -- indexed geometry, against a descriptor set for direct floats.
+
+Indexed display-list geometry was arriving in the command stream. The
+write-gather pipe does not address the GP: it lands at the PI FIFO write
+pointer, and `PI_FIFO_BASE` says where that is. `GXBeginDisplayList` retargets
+it at a buffer in memory and `GXEndDisplayList` puts it back. We stored
+`pi_fifo_base`, `pi_fifo_end` and `pi_fifo_wptr` and ignored all three, so
+every write to `0xCC008000` went to the command processor -- no list was ever
+recorded, and the list being recorded was executed instead. Logging the
+register showed the base moving to `0x0116dd80` at `gxbytes=4456550`, the exact
+byte the parse broke on.
+
+Honouring the register costs about twenty lines:
+
+| | before | after |
+|---|---|---|
+| draws | 3,784 | 265,166 |
+| vertices | 15,192 | 2,101,170 |
+| GX stream | 4.5 MB | 22.9 MB |
+| display lists | 0 | 96,802, none unresolved |
+| unknown opcodes | 204 | 0 |
+
+The boot now runs past the wrist-strap screen and reaches the **file select**:
+`LayoutData/FileSelect.arc`, `LayoutData/FileInfo.arc` and
+`ObjectData/FileSelectData{Mario,Luigi,Yoshi,Planet}.arc`.
+
+**The wrist-strap gate falls to A.** `GV_BTN=0x0800` with period 90 / hold 30
+dismisses it.
+
+Two hypotheses died on the way and are recorded so they are not retried. The
+Mii database is not consulted for this: a zero-filled `RFL_DB.dat` of the right
+size opens (`ret=6`) and changes nothing. And `WUDIsLinkedWBC` is load-bearing
+rather than a leftover -- the state byte at `0x80692846` never leaves `0x00`
+even with the full Bluetooth stack up (`conn=1 intr=1 reports=18206 mode=0x33
+ir=1`), so the HLE return is the only thing that answers it.
+
+Three instruments were repaired in the process, two of which had been quietly
+broken:
+
+- `GV_GX_TRACE` used `signal()`, whose SysV semantics reset the handler to
+  `SIG_DFL`, so the second `SIGALRM` killed the run outright five seconds in.
+  It has been unusable for every run long enough to be worth tracing.
+- The trace was flushed only from the signal handler, so a run that reached its
+  block cap wrote the whole capture into `free()`.
+- The capture buffer was 1 MiB against a desync at 4.46 MB -- it ran out four
+  megabytes before the interesting part.
+
+And one was added: `gx_cp` now keeps a 512-entry ring of decoded commands and
+prints it, with the vertex descriptor and all eight VATs, when the first
+unknown opcode appears. An unknown opcode says where the parse stopped
+agreeing with the game, never why. Why is a command a few back whose length was
+wrong, and that ring is what named it.
+
 ## 2026-09-17 — 56% of the boot was cache maintenance, and the gate is the wrist strap
 
 Two hot PCs were 56% of every dispatch block in a 5M-block boot: `0x804a2f14`
