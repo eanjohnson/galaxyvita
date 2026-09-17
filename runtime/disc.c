@@ -72,6 +72,12 @@ static int push(Disc *d, u32 *cap, u64 offset, u32 size, const char *path) {
   DiscEntry *e = &d->entries[d->count];
   e->offset = offset;
   e->size = size;
+  /* realloc does not zero, and first_seen is only ever assigned when it reads
+   * back as zero. An entry that landed on dirty memory therefore stays
+   * "already seen" for the whole run and never enters the census -- so the
+   * file is never staged, and the console alone hits a disc read the host
+   * always satisfied. That is a boot wedge two steps removed from its cause. */
+  e->first_seen = 0;
   e->path = dup_str(path);
   if (!e->path)
     return 0;
@@ -245,6 +251,7 @@ int disc_open(Disc *d, const char *root) {
   qsort(d->entries, d->count, sizeof(d->entries[0]), cmp_entry);
   d->cache_idx = 0xFFFFFFFFu;
   d->opened = 1;
+  d->trace = getenv("GV_DISC_TRACE") != NULL;
   return 1;
 }
 
@@ -278,6 +285,21 @@ int disc_read(Disc *d, u64 offset, u32 len, u8 *dst) {
   memset(dst, 0, len);
   d->reads++;
   d->bytes += len;
+  if (d->trace) {
+    fprintf(stderr, "discread #%u off=0x%llx len=%u ->", d->reads,
+            (unsigned long long)offset, len);
+    for (u32 i = lower_bound(d, offset); i < d->count; i++) {
+      DiscEntry *e = &d->entries[i];
+      if (e->offset >= offset + len)
+        break;
+      if (e->offset + e->size <= offset)
+        continue;
+      const char *b = strrchr(e->path, '/');
+      fprintf(stderr, " %s[off=0x%llx sz=%u seen=%u]", b ? b + 1 : e->path,
+              (unsigned long long)e->offset, e->size, e->first_seen);
+    }
+    fprintf(stderr, "\n");
+  }
 
   u64 end = offset + len;
   int complete = 1;
@@ -295,6 +317,11 @@ int disc_read(Disc *d, u64 offset, u32 len, u8 *dst) {
     FILE *f = entry_fp(d, i);
     if (!f) {
       complete = 0;
+      u32 k = 0;
+      while (k < d->miss_n && d->miss_idx[k] != i)
+        k++;
+      if (k == d->miss_n && d->miss_n < 32u)
+        d->miss_idx[d->miss_n++] = i;
       continue;
     }
     if (fseek(f, (long)(from - e->offset), SEEK_SET) != 0 ||

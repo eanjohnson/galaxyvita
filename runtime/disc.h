@@ -52,6 +52,14 @@ typedef struct Disc {
   /* Counters (evidence for PROGRESS.md, not decoration). */
   u32 reads;
   u32 misses;
+  /* Which entries a read wanted and could not open. A read spans every FST
+   * entry overlapping its byte range, so a staged subset missing one file
+   * fails reads aimed at its neighbours too -- and "misses=49" on its own
+   * names none of them. The name is the whole diagnosis. */
+  u32 miss_idx[32];
+  u32 miss_n;
+  /* GV_DISC_TRACE: print every read and the entries it spans. */
+  int trace;
   /* Bumped on every entry's first read; see DiscEntry::first_seen. */
   u32 seq;
   u64 bytes;

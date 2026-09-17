@@ -293,6 +293,12 @@ int main(int argc, char **argv) {
   printf("disc reads=%u bytes=%llu misses=%u fst=0x%08x/0x%x\n",
          ch.disc.reads, (unsigned long long)ch.disc.bytes, ch.disc.misses,
          ch.fst_addr, ch.fst_size);
+  /* Naming the files a read wanted and could not open is what turns "the
+   * staged subset is wrong" into a list to add to the census. */
+  for (u32 i = 0; i < ch.disc.miss_n; i++)
+    printf("  disc missing %s\n", ch.disc.entries[ch.disc.miss_idx[i]].path);
+  if (ch.disc.miss_n >= 32u)
+    printf("  disc missing (list full at 32)\n");
   printf("di reads=%u bytes=%u misses=%u | fs opens=%u misses=%u reads=%u "
          "bytes=%u\n",
          ch.ios.di_reads, ch.ios.di_read_bytes, ch.ios.di_misses,

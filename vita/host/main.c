@@ -361,6 +361,18 @@ static void log_fifo(const Chassis *ch) {
            ch->ios.opens, ch->ios.ioctls, ch->ios.ioctlvs, ch->ios.replies,
            ch->ios.hangs, ch->ios.last_path);
   log_line(buf);
+  /* The console had no way to say "a file I wanted is not on the card". It is
+   * the one failure only the device can have -- the host runs against the whole
+   * extraction and the console runs against a staged subset -- and without the
+   * name it reads as an emulation bug. It is not: it is a gap in the census. */
+  snprintf(buf, sizeof(buf), "disc reads=%u bytes=%llu misses=%u",
+           ch->disc.reads, (unsigned long long)ch->disc.bytes, ch->disc.misses);
+  log_line(buf);
+  for (u32 i = 0; i < ch->disc.miss_n; i++) {
+    snprintf(buf, sizeof(buf), "  disc missing %s",
+             ch->disc.entries[ch->disc.miss_idx[i]].path);
+    log_line(buf);
+  }
   snprintf(buf, sizeof(buf), "mmio unique=%u", ch->flipper.unique_n);
   for (u32 i = 0; i < ch->flipper.unique_n && i < 16; i++) {
     snprintf(buf, sizeof(buf), "  mmio 0x%08x", ch->flipper.unique_ea[i]);
