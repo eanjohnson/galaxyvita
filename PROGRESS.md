@@ -2,6 +2,41 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-17 — The bubble launch cannot be driven, and two more suspects fall
+
+**vitacompanion's synthetic input does not work.** `press <button>` answers
+"Input pressed." and nothing receives it. Pressing cross after a run, with the
+shell sitting on the app's LiveArea, launched nothing; and holding cross across
+an entire probe run -- pressed before launch, released after it died -- the app
+read `buttons=0x00000000` on every one of its thirteen ticks. So the input is
+reaching neither SceShell nor the application. Valid targets are cross, circle,
+square, triangle, up, down, left, right, start, select, ps, l1, r1; `press`
+holds until `release`, and a bare `press` with no release leaves the button
+down.
+
+That kills the bubble launch as an unattended test, and it matters beyond this
+question: `vita_pad` reads through `sceCtrlPeekBufferPositive`, so synthetic
+input can never drive the game either. Any plan that assumed it could is wrong.
+
+**Extended memory is not the cause.** GVITA0001's `param.sfo` carries
+`ATTRIBUTE2=0xc` -- the vita-mksfoex flag requesting the larger memory budget,
+which GalaxyVita needs for 88 MB of guest RAM -- where VitaShell and VitaDB
+Downloader both have `0x0`. It applies to the slot, so even the fifty-line
+probe had been running as an extended-memory app all along. Patched to `0x0`,
+uploaded and verified: 13 ticks. Rebooted in case SceAppMgr caches the app
+database: 13 ticks again. Restored byte-identical.
+
+**One real difference found and not yet tested.** GVITA0001's `sce_sys` holds
+only `param.sfo` and `package`. VitaShell and VitaDB Downloader both also have
+`icon0.png` and a `livearea` directory. This slot was never populated by a
+normal VPK install, and an incomplete registration is a plausible reason for
+the shell to reclaim the app -- but testing it needs either a real install
+(vitacompanion has no `install`, and VitaShell cannot be driven without working
+input) or the probe run from a different, properly registered title's slot.
+
+Cleared so far: the emulator, the app's structure, the plugin set, the
+extended-memory attribute. Untested: the registration, and the launch path.
+
 ## 2026-09-17 — The plugins are not the cause
 
 Bisected `ur0:tai/config.txt` with nine plugins commented out: NoPowerLimits,

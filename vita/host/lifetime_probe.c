@@ -25,6 +25,7 @@
  * Nothing here is emulation. The point is to add one suspect at a time and
  * watch for the run that stops reaching sixty seconds.
  */
+#include <psp2/ctrl.h>
 #include <psp2/display.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
@@ -136,8 +137,14 @@ static int tick_loop(SceSize args, void *argp) {
   for (int i = 1; i <= SECONDS; i++) {
     sceKernelDelayThread(1000 * 1000);
     SceUInt64 us = sceKernelGetProcessTimeWide();
-    snprintf(buf, sizeof(buf), "tick %d proc=%llums", i,
-             (unsigned long long)(us / 1000ull));
+    /* Whether vitacompanion's synthetic input reaches an application at all.
+     * If it does here but cannot drive the LiveArea, then `press` is
+     * app-only and the bubble is not reachable from the host. */
+    SceCtrlData pad;
+    memset(&pad, 0, sizeof(pad));
+    sceCtrlPeekBufferPositive(0, &pad, 1);
+    snprintf(buf, sizeof(buf), "tick %d proc=%llums buttons=0x%08x", i,
+             (unsigned long long)(us / 1000ull), (unsigned)pad.buttons);
     say(buf);
   }
   say("survived 60s");

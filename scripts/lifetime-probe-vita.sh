@@ -52,7 +52,7 @@ link() {
   arm-vita-eabi-gcc -O2 -Wall -Wextra -std=c11 -Wl,-q -o "$BUILD/probe.elf" \
     "$ROOT/vita/host/lifetime_probe.c" "$BUILD/pad.s" \
     -lSceIofilemgr_stub -lSceSysmem_stub -lSceLibKernel_stub \
-    -lSceKernelThreadMgr_stub -lSceProcessmgr_stub -lSceDisplay_stub
+    -lSceKernelThreadMgr_stub -lSceProcessmgr_stub -lSceDisplay_stub -lSceCtrl_stub
 }
 
 pad=0
