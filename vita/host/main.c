@@ -78,6 +78,34 @@ static u32 read_block_cap(void) {
   return v ? (u32)v : BLOCK_CAP;
 }
 
+/* How many frames to dump and how far apart, from a flag file.
+ *
+ * The defaults covered frames 0 to 112, which at ~45k blocks per frame is the
+ * first three seconds of guest time -- and the first white screens pulled off
+ * the card turned out to be that opening flash, which the host renders white
+ * too. Every dump was of a moment nobody had a question about. The interesting
+ * frames are thousands in, so the stride has to be settable without a rebuild
+ * and another 35 MB upload. Format: "<count> <stride>". */
+#define DUMP_FLAG "ux0:data/galaxyvita/dump.txt"
+static unsigned g_dump_count = 16u, g_dump_stride = 256u;
+
+static void read_dump_flag(void) {
+  SceUID fd = sceIoOpen(DUMP_FLAG, SCE_O_RDONLY, 0);
+  if (fd < 0)
+    return;
+  char buf[64];
+  int n = sceIoRead(fd, buf, sizeof(buf) - 1);
+  sceIoClose(fd);
+  if (n <= 0)
+    return;
+  buf[n] = 0;
+  unsigned c = 0, st = 0;
+  if (sscanf(buf, "%u %u", &c, &st) == 2 && c && st) {
+    g_dump_count = c;
+    g_dump_stride = st;
+  }
+}
+
 /* Guest RAM is memblocks, not heap, so the heap exists almost entirely for
  * ShaccCg: it churns tens of megabytes per compile and how many compiles
  * survive one process scales with how much heap there is. The shader cache
@@ -637,7 +665,8 @@ static int run_aot(SceSize args, void *argp) {
       unsigned compiled = 0, cached = 0, bad = 0;
       /* Every 16th of the first frames, which is enough to see the boot
        * sequence change without filling ux0: -- each frame is 2 MB. */
-      gx_gxm_dump_frames(FRAME_DIR, 8, 16);
+      read_dump_flag();
+      gx_gxm_dump_frames(FRAME_DIR, g_dump_count, g_dump_stride);
       gx_gxm_sink(&sink);
       gx_cp_set_sink(ch.gx, &sink);
       g_gfx_ready = 1;

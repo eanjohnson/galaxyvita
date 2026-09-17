@@ -51,13 +51,6 @@ typedef struct {
  * or the first run's blob would be loaded forever. */
 #define GV_PASSTHROUGH_VERSION "v1"
 
-/* The ground colour. GX clears to whatever the game's copy-clear register says,
- * which this stage does not read yet; until it does, a dark blue rather than
- * black makes "the GXM path ran and presented" distinguishable from "nothing
- * reached the screen" at a glance. */
-#define GV_CLEAR_R 0x0D
-#define GV_CLEAR_G 0x1A
-#define GV_CLEAR_B 0x29
 
 static const char k_vertex_cg[] =
     "void main(\n"
@@ -509,6 +502,25 @@ static void set_viewport_from(const float vp[6]) {
   sceGxmSetViewport(gxm_context(), x_off, x_scale, y_off, y_scale, vp[5], vp[2]);
 }
 
+/* The ground colour, read from the game's copy-clear registers exactly as
+ * tests/host/gx_soft.c's clear_efb() reads them: BP 0x4F is alpha:red, BP 0x50
+ * is green:blue.
+ *
+ * This used to be a hardcoded dark blue, chosen so that "the GXM path ran and
+ * presented" was distinguishable from "nothing reached the screen". It did its
+ * job and then became the difference between a host frame and a device frame
+ * of the same moment -- the host cleared to the game's black, the console to
+ * the debug blue -- which is noise in the one comparison that decides whether
+ * the console is drawing the right thing. */
+static void clear_colour(unsigned char out[4]) {
+  const u32 ar = g.regs ? g.regs->bp[0x4Fu] : 0u;
+  const u32 gb = g.regs ? g.regs->bp[0x50u] : 0u;
+  out[0] = (unsigned char)(ar & 0xFFu);
+  out[1] = (unsigned char)((gb >> 8) & 0xFFu);
+  out[2] = (unsigned char)(gb & 0xFFu);
+  out[3] = 0xFFu;
+}
+
 /* GXM has no colour-clear call either, and unlike depth there is no background
  * value to lean on -- the only way to put a known colour in every pixel is to
  * draw one. A single oversized triangle does it in one draw with no clipping
@@ -518,8 +530,10 @@ static void clear_screen(void) {
   GvVert *v = g.arena[g.arena_index].verts;
   unsigned int *idx = g.arena[g.arena_index].indices;
   static const float k_pos[3][2] = {{-1.0f, -1.0f}, {3.0f, -1.0f}, {-1.0f, 3.0f}};
+  unsigned char rgba[4];
   int i;
 
+  clear_colour(rgba);
   for (i = 0; i < 3; i++) {
     v[i].x = k_pos[i][0];
     v[i].y = k_pos[i][1];
@@ -527,10 +541,7 @@ static void clear_screen(void) {
     v[i].w = 1.0f;
     v[i].u = 0.0f;
     v[i].v = 0.0f;
-    v[i].c[0] = GV_CLEAR_R;
-    v[i].c[1] = GV_CLEAR_G;
-    v[i].c[2] = GV_CLEAR_B;
-    v[i].c[3] = 0xFF;
+    memcpy(v[i].c, rgba, 4);
     idx[i] = (unsigned int)i;
   }
   g.vert_used = 3;
