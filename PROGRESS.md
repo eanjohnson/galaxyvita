@@ -2,6 +2,51 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-17 — Title screen and file select; the gate was the Nunchuk
+
+The connect-a-remote screen was a deadlock of our own making. The status
+report's extension bit was set from `ext_enabled`, which only becomes true
+once the host writes `0x55` to `0xA400F0` to bring the port up -- and the host
+only does that for an extension it has been told is present, which that bit is
+the only way of learning. Nothing broke the cycle.
+
+On hardware the bit means "something is plugged in", which is true before the
+console is listening. The two facts are separate, and conflating them is what
+deadlocks the handshake. `ext_attached` is now whether a Nunchuk is in the port
+(it is, from reset -- SMG requires one, and the Vita has a left stick to drive
+it with), `ext_enabled` stays "the port has been initialised", and the
+identifier and calibration are installed on attach, because the identifier is
+what the SDK reads to find out what it found.
+
+The SDK finds it, initialises it, and switches the report mode from `0x33` to
+`0x37` -- the mode carrying extension bytes. The boot then walks through the
+connect screen to the **title screen**: the logo with its starfield, "Press
+both A and B", (c) 2007 Nintendo.
+
+Holding A and B (`GV_BTN=0x0C00`) clears that too, and the boot reaches the
+**file select** -- "Please choose a file", the save-file planets rendered as
+textured 3D geometry, the file numbers legible.
+
+So the boot order is now: strap screen -> connect screen -> title screen ->
+file select, each one gated by something we can name, and each one rendering.
+At 120M blocks: 2.10M draws, 15.1M vertices, 571k display lists, `unk=0
+pending=0`.
+
+The first purely cosmetic defect is also the first visible one: a blown-out
+white slab across the middle of the file select. The rasteriser has no per-draw
+blend state, so a glow pass that should composite additively is drawn opaque.
+That is workstream #3 (TEV and texturing) arriving on its own, and it is now
+worth doing for what it fixes rather than for what it might.
+
+The submodule pins are honest again. Both carried a local-only commit and both
+pins were deliberately left stale, because a pin nobody can fetch is worse than
+an old one. We have no push rights on the ExpansionPak repositories, so both
+are forked to `eanjohnson` and pushed as a `galaxyvita` branch -- a branch and
+not the fork's default, because our commits sit 13 and 151 behind their
+upstreams and rebasing them forward would change the code under a tree whose
+boot has just been validated frame by frame. Catching up to upstream is its own
+job, to be measured, not a side effect of needing somewhere to push.
+
 ## 2026-09-17 — The boot renders the strap screen and stops asking for a Wii Remote
 
 With display lists recorded rather than executed, a 90M-block boot dumps
