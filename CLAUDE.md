@@ -116,6 +116,25 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   sharing the card, ftpvita included. Stride 8 was enough to do it. Keep the
   product of count and frequency low; the useful frames are rarely so close
   together that it matters.
+- **"The screen is white" is not evidence until the host frame is checked.**
+  The host renders frames 0 to 99 of this boot as solid white -- the game's
+  own opening flash -- and the strap screen only appears around frame 100. A
+  device dump window that ends before then shows white because white is
+  correct, and it has now twice been read as a rendering bug and chased into
+  the backend. Before diagnosing a frame, open the same frame number from a
+  host run; `fx_ref` in the job scratch is one. The same goes for the visible
+  symptom the user reports: the console showing a white screen for the first
+  several seconds is the game, not the port.
+- **GXM's default uniform buffer is not cleared.** What
+  `sceGxmReserveFragmentDefaultUniformBuffer` hands out holds whatever was
+  there before, so a draw that does not upload a uniform reads the previous
+  scene's value, not zero. A fragment shader that can `discard` and a draw
+  that skips the upload is a frame that vanishes for no visible reason -- the
+  screen clear is itself such a draw, and it was being discarded against
+  leftover alpha-test state, leaving the display showing the buffer's previous
+  contents. Upload before the first use, and where there is a choice, pick the
+  encoding whose all-zero value is the harmless one.
+
 - The Vita does not need the whole 3.2 GB extraction. The boot touches 25 MB of
   it; `GV_DISC_CENSUS` records exactly which files, and
   `scripts/stage-media-vita.sh` sends only those.
