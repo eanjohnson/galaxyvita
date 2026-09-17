@@ -1,12 +1,15 @@
 /* Host-side chassis: load RMGE01 DOL, dispatch AOT until FIFO/cap. */
 /* The build is -std=c11, which hides POSIX; sigaction and alarm need this. */
 #define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE 1
 
 #include "chassis.h"
 #include "gx_soft.h"
 
 #include <stdio.h>
 #include <signal.h>
+#include <sys/time.h>
+#include <ucontext.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,11 +59,115 @@ static void on_trace_alarm(int sig) {
   }
   alarm(5);
 }
+/* --- sampling profiler ---------------------------------------------------
+ * Nothing here has ever been profiled, and every performance claim so far has
+ * been inferred from a block counter rather than measured. perf is not
+ * available in this environment, and -pg distorts exactly the thing being
+ * measured -- the per-block dispatch cost -- so this samples itself: SIGPROF
+ * on a 1 kHz profiling timer, and the host PC out of the signal's ucontext.
+ *
+ * Raw PCs are written out and resolved afterwards against the binary's symbol
+ * table, because resolving in the handler would mean allocating in it. The
+ * load base goes in the file too: the chassis links as PIE here, so a PC means
+ * nothing without it. */
+static u32 *g_prof_pc;
+static volatile u32 g_prof_n;
+static u32 g_prof_max;
+static unsigned long g_prof_base;
+static const char *g_prof_path;
+
+static void on_prof(int sig, siginfo_t *si, void *uc) {
+  (void)sig;
+  (void)si;
+  if (g_prof_n >= g_prof_max)
+    return;
+  ucontext_t *c = (ucontext_t *)uc;
+#if defined(__x86_64__)
+  unsigned long pc = (unsigned long)c->uc_mcontext.gregs[REG_RIP];
+#elif defined(__aarch64__)
+  unsigned long pc = (unsigned long)c->uc_mcontext.pc;
+#elif defined(__arm__)
+  unsigned long pc = (unsigned long)c->uc_mcontext.arm_pc;
+#else
+  unsigned long pc = 0;
+  (void)c;
+#endif
+  /* Stored as an offset from the load base: 32 bits is plenty for a 60 MB
+   * binary and halves the file. */
+  g_prof_pc[g_prof_n++] = (u32)(pc - g_prof_base);
+}
+
+/* The base address of this executable's own mapping, from /proc/self/maps. */
+static unsigned long prof_load_base(void) {
+  FILE *m = fopen("/proc/self/maps", "r");
+  if (!m)
+    return 0;
+  char line[512];
+  unsigned long base = 0;
+  char exe[256];
+  ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+  if (n <= 0) {
+    fclose(m);
+    return 0;
+  }
+  exe[n] = 0;
+  while (fgets(line, sizeof(line), m)) {
+    unsigned long lo;
+    char path[384];
+    if (sscanf(line, "%lx-%*x %*s %*s %*s %*s %383s", &lo, path) == 2 &&
+        strcmp(path, exe) == 0) {
+      base = lo;
+      break;
+    }
+  }
+  fclose(m);
+  return base;
+}
+
+static void prof_flush(void) {
+  if (!g_prof_path || !g_prof_pc)
+    return;
+  FILE *f = fopen(g_prof_path, "wb");
+  if (!f)
+    return;
+  fprintf(f, "base %lu count %u\n", g_prof_base, g_prof_n);
+  fwrite(g_prof_pc, 4, g_prof_n, f);
+  fclose(f);
+  fprintf(stderr, "prof -> %s (%u samples)\n", g_prof_path, g_prof_n);
+}
+
+static void prof_start(void) {
+  g_prof_path = getenv("GV_PROF");
+  if (!g_prof_path)
+    return;
+  g_prof_max = 8u << 20; /* 8M samples at 1 kHz is over two hours */
+  g_prof_pc = (u32 *)malloc((size_t)g_prof_max * 4u);
+  g_prof_base = prof_load_base();
+  if (!g_prof_pc) {
+    g_prof_path = NULL;
+    return;
+  }
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_sigaction = on_prof;
+  sa.sa_flags = SA_SIGINFO | SA_RESTART;
+  sigaction(SIGPROF, &sa, NULL);
+  /* ITIMER_PROF counts CPU time, not wall time, so a run that blocks on I/O
+   * does not accumulate samples it did not spend executing. */
+  struct itimerval it;
+  it.it_interval.tv_sec = 0;
+  it.it_interval.tv_usec = 1000;
+  it.it_value = it.it_interval;
+  setitimer(ITIMER_PROF, &it, NULL);
+  fprintf(stderr, "prof on, 1 kHz -> %s (base 0x%lx)\n", g_prof_path, g_prof_base);
+}
+
 /* A hang is exactly the case the trace exists for, so flush it on the way out
  * rather than only on a clean finish. */
 static void on_trace_signal(int sig) {
   (void)sig;
   gx_cp_trace_flush(g_trace_cp);
+  prof_flush();
   _exit(1);
 }
 
@@ -192,6 +299,7 @@ int main(int argc, char **argv) {
       sigaction(SIGTERM, &sa, NULL);
     }
   }
+  prof_start();
   if (!chassis_load_dol(&ch, dol))
     return 1;
 
@@ -342,6 +450,7 @@ int main(int argc, char **argv) {
    * cap exits here, and until this flush existed that run wrote the whole
    * capture into free() and reported nothing. */
   gx_cp_trace_flush(ch.gx);
+  prof_flush();
 
   int ok = ch.dispatch_hits > 0 && ch.stop_reason != CHASSIS_STOP_SMC;
   chassis_shutdown(&ch);
