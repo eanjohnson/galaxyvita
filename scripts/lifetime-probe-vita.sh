@@ -52,7 +52,7 @@ link() {
   arm-vita-eabi-gcc -O2 -Wall -Wextra -std=c11 -Wl,-q -o "$BUILD/probe.elf" \
     "$ROOT/vita/host/lifetime_probe.c" "$BUILD/pad.s" \
     -lSceIofilemgr_stub -lSceSysmem_stub -lSceLibKernel_stub \
-    -lSceKernelThreadMgr_stub -lSceProcessmgr_stub -lSceDisplay_stub -lSceCtrl_stub
+    -lSceKernelThreadMgr_stub -lSceProcessmgr_stub -lSceDisplay_stub -lSceCtrl_stub -lSceAppMgr_stub
 }
 
 pad=0
@@ -105,7 +105,7 @@ cmd "destroy" >/dev/null || true
 # Every flag is set or cleared on every run: an inherited flag from a previous
 # run would silently answer a different question than the one being asked.
 : > "$BUILD/flag.txt"
-for f in mem:GV_PROBE_MEM stack:GV_PROBE_STACK threads:GV_PROBE_THREADS display:GV_PROBE_DISPLAY smallstack:GV_PROBE_SMALLSTACK poll:GV_PROBE_POLL; do
+for f in mem:GV_PROBE_MEM stack:GV_PROBE_STACK threads:GV_PROBE_THREADS display:GV_PROBE_DISPLAY smallstack:GV_PROBE_SMALLSTACK poll:GV_PROBE_POLL relaunch:GV_PROBE_RELAUNCH loadexec:GV_PROBE_LOADEXEC; do
   name="${f%%:*}"; var="${f##*:}"
   if [[ -n "${!var:-}" ]]; then
     put "$BUILD/flag.txt" "ux0:/data/galaxyvita/probe_$name.txt" >/dev/null
@@ -115,6 +115,7 @@ for f in mem:GV_PROBE_MEM stack:GV_PROBE_STACK threads:GV_PROBE_THREADS display:
   fi
 done
 
+del "ux0:/data/galaxyvita/probe_reentry.txt"
 del "ux0:/data/galaxyvita/lifetime.log"
 put "$BUILD/eboot.bin" "ux0:/app/$TITLE/eboot.bin"
 cmd "launch $TITLE" >/dev/null || true

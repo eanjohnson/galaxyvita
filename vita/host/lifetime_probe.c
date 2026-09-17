@@ -25,6 +25,7 @@
  * Nothing here is emulation. The point is to add one suspect at a time and
  * watch for the run that stops reaching sixty seconds.
  */
+#include <psp2/appmgr.h>
 #include <psp2/ctrl.h>
 #include <psp2/display.h>
 #include <psp2/io/fcntl.h>
@@ -51,12 +52,32 @@
  * loop instead of parking in sceKernelWaitThreadEnd. This is the shape
  * GalaxyVita would have to adopt, so it is worth proving here first. */
 #define FLAG_POLL DATA_DIR "/probe_poll.txt"
+/* The launch path. vitacompanion's `launch` is
+ * sceAppMgrLaunchAppByUri(0x20000, "psgm:play?titleid=..."), and an app it
+ * starts is killed after ~14 s while the same binary started from its LiveArea
+ * bubble runs as long as it likes. Homebrew launchers normally pass 0xFFFFF
+ * for that flags word. If the kill is a property of how the process was
+ * started rather than of the process, then starting a second time through a
+ * clean path should shake it off -- so the first instance immediately
+ * re-launches and exits, and the second one does the ticking.
+ *
+ * probe_relaunch.txt   re-launch once via sceAppMgrLaunchAppByUri(0xFFFFF)
+ * probe_loadexec.txt   ... via sceAppMgrLoadExec("app0:eboot.bin") instead
+ *
+ * probe_reentry.txt is the guard, written by the first instance and removed by
+ * the second. Without it a failed relaunch that still returns is an infinite
+ * launch loop, which on this console means a power cycle and somebody at the
+ * device. */
+#define FLAG_RELAUNCH DATA_DIR "/probe_relaunch.txt"
+#define FLAG_LOADEXEC DATA_DIR "/probe_loadexec.txt"
+#define REENTRY_PATH DATA_DIR "/probe_reentry.txt"
 
 #define AFFINITY_CPU0 0x10000
 #define AFFINITY_CPU1 0x20000
 #define AFFINITY_CPU2 0x40000
 
 #define SECONDS 60
+#define TITLEID "GVITA0001"
 
 static SceUID g_fd = -1;
 static volatile int g_done;
@@ -154,9 +175,51 @@ static int tick_loop(SceSize args, void *argp) {
 
 int main(void) {
   sceIoMkdir(DATA_DIR, 0777);
-  g_fd = sceIoOpen(LOG_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+
+  /* Second instance appends: the first instance's lines say which path it took
+   * and are the only record of it, so truncating here would throw away half
+   * the result. */
+  int reentered = flag(REENTRY_PATH);
+  g_fd = sceIoOpen(LOG_PATH,
+                   SCE_O_WRONLY | SCE_O_CREAT |
+                       (reentered ? SCE_O_APPEND : SCE_O_TRUNC),
+                   0777);
   if (g_fd < 0)
     return 0;
+
+  if (reentered) {
+    sceIoRemove(REENTRY_PATH);
+    say("re-entered: this instance was launched by the previous one");
+  } else if (flag(FLAG_RELAUNCH) || flag(FLAG_LOADEXEC)) {
+    int use_loadexec = flag(FLAG_LOADEXEC);
+    SceUID g = sceIoOpen(REENTRY_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC,
+                         0777);
+    if (g >= 0) {
+      sceIoWrite(g, "1", 1);
+      sceIoSyncByFd(g, 0);
+      sceIoClose(g);
+    }
+    char buf[192];
+    int rc;
+    if (use_loadexec) {
+      say("relaunching via sceAppMgrLoadExec(app0:eboot.bin)");
+      rc = sceAppMgrLoadExec("app0:eboot.bin", NULL, NULL);
+    } else {
+      say("relaunching via sceAppMgrLaunchAppByUri(0xFFFFF)");
+      rc = sceAppMgrLaunchAppByUri(0xFFFFF, "psgm:play?titleid=" TITLEID);
+    }
+    /* Reaching here means the process was not replaced. That is not the same
+     * as the call failing: sceAppMgrLaunchAppByUri on the title that is
+     * already running returns 0 and does nothing, which reads as success and
+     * leaves the first instance ticking. Report the code and let the reader
+     * decide; do not label rc=0 a failure. Either way, clear the guard so the
+     * next run is not fooled into thinking it is the second instance. */
+    snprintf(buf, sizeof(buf),
+             "relaunch returned rc=0x%08x and did not replace this process",
+             (unsigned)rc);
+    say(buf);
+    sceIoRemove(REENTRY_PATH);
+  }
 
   int want_mem = flag(FLAG_MEM);
   int want_stack = flag(FLAG_STACK);
