@@ -29,6 +29,22 @@ flock -n 9 || { echo "another script is using the Vita; wait for it or kill it" 
 [[ -n "${GALAXYVITA_IP:-}" ]] || { echo "Set GALAXYVITA_IP or write scripts/.vita-ip" >&2; exit 1; }
 IP="$GALAXYVITA_IP"
 cmd() { printf '%s\n' "$1" | socat - "TCP:$IP:1338,connect-timeout=5"; }
+# Stop our app by name rather than quitting every application.
+#
+# `destroy` also kills VitaShell, which is what serves FTP on 1337 -- so the
+# convenient hammer takes the file transport down with it, and the console
+# looks wedged when it is only missing its FTP server. Escalate only if the
+# targeted kill did not take.
+stop_app() {
+  cmd "kill $TITLE" >/dev/null 2>&1 || true
+  sleep 2
+  if curl -sS --connect-timeout 6 -l "ftp://$IP:1337/ux0:/" >/dev/null 2>&1; then
+    return 0
+  fi
+  cmd "destroy" >/dev/null 2>&1 || true
+  sleep 2
+}
+
 
 # GV_CG_DIR stages a prepared directory of .cg verbatim instead of translating.
 # Used to bisect a compiler hang down to a single construct without waiting on
@@ -77,7 +93,7 @@ fi
 restore() {
   [[ -f "$BACKUP" ]] || return 0
   echo "==> restoring $TITLE eboot"
-  cmd "destroy" >/dev/null 2>&1 || true
+  stop_app
   # The app can still hold its own eboot for a moment after destroy, which
   # comes back as FTP 550. Retry rather than leave the console holding the
   # self-test binary in the project's app slot.
@@ -101,7 +117,7 @@ for old in $(ftp --list-only "ftp://$IP:1337/ux0:/data/galaxyvita/shaders/" 2>/d
   ftp -Q "-DELE ux0:/data/galaxyvita/shaders/$old" "ftp://$IP:1337/ux0:/data/galaxyvita/" >/dev/null 2>&1 || true
 done
 for f in "$CG"/*.cg; do put "$f" "ux0:/data/galaxyvita/shaders/$(basename "$f")"; done
-cmd "destroy" >/dev/null || true
+stop_app
 put "$BUILD/eboot.bin" "ux0:/app/$TITLE/eboot.bin"
 
 # ShaccCg wedges after a handful of compiles in one process, so the self-test
@@ -118,7 +134,7 @@ for launch in $(seq 1 "$launches"); do
   # Clear the marker first: its reappearance is the only reliable signal that
   # this launch ran, as opposed to the previous launch's report still on disk.
   del "ux0:/data/galaxyvita/selftest_batch.txt"
-  cmd "destroy" >/dev/null 2>&1 || true
+  stop_app
   sleep 2
   cmd "launch $TITLE" >/dev/null || true
 

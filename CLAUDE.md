@@ -90,6 +90,17 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   When a GX parse goes wrong, check what the stream should have contained
   before suspecting the decode -- an independent walker over the capture is
   cheap and settles it either way.
+- **`destroy` kills the FTP server.** vitacompanion's `destroy` quits *every*
+  application, and VitaShell -- which is what serves FTP on 1337 -- is an
+  application. So the convenient hammer takes the file transport down with it:
+  1337 stops answering while vitacompanion keeps replying normally on 1338,
+  which reads as a wedged console and is a self-inflicted one. It cost two
+  reboots before the connection was made, and the second time the scripts'
+  own `destroy` did it between a successful FTP probe and the very next
+  command. `kill TITLEID` is less reliable, which is why the scripts used to
+  reach for `destroy`; they now try the targeted kill, check whether FTP still
+  answers, and escalate only when it did not take. Restarting FTP afterwards
+  needs someone to press SELECT in VitaShell, so this is worth avoiding.
 - **Do not abort an FTP transfer mid-stream, and a wedged FTP is not a power
   cycle.** `curl --max-time` killing a RETR part-way, or reading a frame dump
   the app is still writing, leaves ftpvita unable to serve anything: port 1337

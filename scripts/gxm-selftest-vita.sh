@@ -24,6 +24,22 @@ flock -n 9 || { echo "another script is using the Vita; wait for it or kill it" 
 [[ -n "${GALAXYVITA_IP:-}" ]] || { echo "Set GALAXYVITA_IP or write scripts/.vita-ip" >&2; exit 1; }
 IP="$GALAXYVITA_IP"
 cmd() { printf '%s\n' "$1" | socat - "TCP:$IP:1338,connect-timeout=5"; }
+# Stop our app by name rather than quitting every application.
+#
+# `destroy` also kills VitaShell, which is what serves FTP on 1337 -- so the
+# convenient hammer takes the file transport down with it, and the console
+# looks wedged when it is only missing its FTP server. Escalate only if the
+# targeted kill did not take.
+stop_app() {
+  cmd "kill $TITLE" >/dev/null 2>&1 || true
+  sleep 2
+  if curl -sS --connect-timeout 6 -l "ftp://$IP:1337/ux0:/" >/dev/null 2>&1; then
+    return 0
+  fi
+  cmd "destroy" >/dev/null 2>&1 || true
+  sleep 2
+}
+
 
 mkdir -p "$BUILD"
 
@@ -95,7 +111,7 @@ fi
 restore() {
   [[ -f "$BACKUP" ]] || return 0
   echo "==> restoring $TITLE eboot"
-  cmd "destroy" >/dev/null 2>&1 || true
+  stop_app
   for attempt in 1 2 3 4; do
     sleep $(( attempt * 3 ))
     if put "$BACKUP" "ux0:/app/$TITLE/eboot.bin"; then
@@ -110,7 +126,7 @@ trap restore EXIT
 echo "==> staging to $IP"
 cmd "screen on" >/dev/null || true
 cmd "nosleep on" >/dev/null || true
-cmd "destroy" >/dev/null || true
+stop_app
 put "$BUILD/eboot.bin" "ux0:/app/$TITLE/eboot.bin"
 
 # GV_GXM_FRESH=1 drops the cached GXP so the compile path is exercised rather

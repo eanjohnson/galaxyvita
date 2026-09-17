@@ -50,8 +50,26 @@ if [[ -z "$EBOOT" ]]; then
 fi
 
 wake
-# vitacompanion 1.06: `kill TITLEID` often fails; `destroy` quits every app.
-cmd "destroy" || true
+# Stop our app by name, and only escalate if that did not take.
+#
+# `destroy` quits EVERY application, and on this console VitaShell is an
+# application -- and VitaShell is what serves FTP on 1337. So the convenient
+# hammer takes the file transport down with it: port 1337 stops answering while
+# vitacompanion keeps replying on 1338, which reads as a wedged console and is
+# really a self-inflicted one. It cost a reboot twice before the connection was
+# made. `kill TITLEID` is less reliable, which is why this used to reach for
+# `destroy` -- so try it, check, and fall back only when it actually failed.
+stop_app() {
+  cmd "kill $TITLE" >/dev/null 2>&1 || true
+  sleep 2
+  # If FTP still answers, nothing further is needed and nothing was risked.
+  if curl -sS --connect-timeout 6 -l "ftp://$IP:1337/ux0:/app/$TITLE/" >/dev/null 2>&1; then
+    return 0
+  fi
+  cmd "destroy" >/dev/null 2>&1 || true
+  sleep 2
+}
+stop_app
 echo "Uploading $(basename "$EBOOT") -> ux0:/app/$TITLE/eboot.bin"
 curl -q --ftp-method nocwd -T "$EBOOT" "ftp://$IP:1337/ux0:/app/$TITLE/eboot.bin"
 cmd "launch $TITLE"

@@ -29,12 +29,28 @@ TITLE="${GALAXYVITA_TITLEID}"
 
 mkdir -p "$OUT"
 cmd() { printf '%s\n' "$1" | socat - "TCP:$IP:1338,connect-timeout=5"; }
+# Stop our app by name rather than quitting every application.
+#
+# `destroy` also kills VitaShell, which is what serves FTP on 1337 -- so the
+# convenient hammer takes the file transport down with it, and the console
+# looks wedged when it is only missing its FTP server. Escalate only if the
+# targeted kill did not take.
+stop_app() {
+  cmd "kill $TITLE" >/dev/null 2>&1 || true
+  sleep 2
+  if curl -sS --connect-timeout 6 -l "ftp://$IP:1337/ux0:/" >/dev/null 2>&1; then
+    return 0
+  fi
+  cmd "destroy" >/dev/null 2>&1 || true
+  sleep 2
+}
+
 ftp() { curl -sS --connect-timeout 10 "$@"; }
 del() { ftp -Q "-DELE $1" "ftp://$IP:1337/" >/dev/null 2>&1 || true; }
 
 cmd "screen on" >/dev/null || true
 cmd "nosleep on" >/dev/null || true
-cmd "destroy" >/dev/null || true
+stop_app
 
 # The app truncates boot.log at startup, but deleting both first means a stale
 # report from the previous launch can never be mistaken for this one's.
