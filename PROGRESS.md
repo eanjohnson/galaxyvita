@@ -2,6 +2,59 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-17 — The cap is the console's, and it is intermittent
+
+`vita/host/lifetime_probe.c` is the control: about fifty lines, ticking once a
+second to a synced log, built as the same unsafe fself, put in the same
+registered slot, launched the same way. No guest RAM, no AOT code, no chassis,
+no graphics. **It dies after 13 ticks, at proc=13842ms.**
+
+So the cap is not GalaxyVita's doing, and never was. The real app's watchdog
+"t=10s" and the probe's ~14s of process time are the same wall -- GalaxyVita
+spends several seconds allocating 88 MB and loading the DOL before its
+watchdog starts counting. Every device number in this log has been bounded by
+this and read as an emulator problem.
+
+**A bisect I then got wrong, recorded because the mistake is the useful part.**
+The probe takes flag files adding one GalaxyVita trait at a time. Run in
+order:
+
+| flags | result |
+| --- | --- |
+| (none) | 13 ticks |
+| display | **60 ticks** |
+| display + mem | **60 ticks** |
+| display + mem + stack + threads | 13 ticks |
+| display + stack | 13 ticks |
+| display + smallstack | 13 ticks |
+| display + poll | 13 ticks |
+| display + threads | 13 ticks |
+| display (repeat of row 2) | 13 ticks |
+
+Read top-down that looks like a clean answer -- present a frame and live,
+spawn a worker and die -- and it is wrong. The last row is the same
+configuration as the second, and it died. The two survivals do not reproduce,
+so nothing in the table controls anything: not presenting (GalaxyVita presents
+at 60/s with `prc=0x00000000` and dies anyway, `pres=743` by t=10s), not the
+88 MB, not the 8 MB stack, not the thread count, not whether main blocks in
+sceKernelWaitThreadEnd. Two unreplicated survivals are not a signal, and
+bisecting off them cost six device runs.
+
+What is established: every application tested is stopped ~13.9 s after launch,
+the timing is sharply repeatable, it is unrelated to load (idle and flat-out
+die alike), and twice something suppressed it for a full 60 s and did not do so
+again.
+
+Not yet tried, and the obvious next move: the plugin set. `ur0:tai/config.txt`
+loads NoPowerLimits, CapUnlocker, PSVshellPlus (kernel and shell), catlog,
+yamt, LowMemMode and others. GVITA0001 is not listed there, so no user plugin
+is injected into our app -- but kernel and SceShell plugins still apply, and an
+intermittent timer that stops an application is exactly the shape of one of
+them. Bisecting it means editing `ur0:tai/config.txt` and rebooting, which
+vitacompanion can do unattended, but it changes the console's system
+configuration and must keep vitacompanion itself loaded or the device stops
+being reachable.
+
 ## 2026-09-16 — The boot was never stalling; the app was being stopped
 
 With the census fixed the console ran materially further -- past the old
