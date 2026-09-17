@@ -81,6 +81,15 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   LiveArea cannot be driven from the host, and since `vita_pad` reads through
   the same `sceCtrlPeekBufferPositive`, synthetic input can never drive the
   game either.
+- **The write-gather pipe is not the GP.** Writes to `0xCC008000` land at the
+  PI FIFO write pointer, and `PI_FIFO_BASE` says where that is.
+  `GXBeginDisplayList` points it at a buffer in memory. Feeding every WGP write
+  to the command processor recorded no display lists and executed their
+  contents as commands; the boot then froze on a vertex-stride desync 4.5 MB
+  into the stream, which read convincingly like a decoder bug and was not one.
+  When a GX parse goes wrong, check what the stream should have contained
+  before suspecting the decode -- an independent walker over the capture is
+  cheap and settles it either way.
 - The Vita does not need the whole 3.2 GB extraction. The boot touches 25 MB of
   it; `GV_DISC_CENSUS` records exactly which files, and
   `scripts/stage-media-vita.sh` sends only those.
