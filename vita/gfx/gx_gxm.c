@@ -1,5 +1,6 @@
 #include "gx_gxm.h"
 
+#include "gx_texture.h"
 #include "gxm.h"
 #include "shader_cache.h"
 
@@ -78,12 +79,53 @@ static const char k_fragment_cg[] =
     "  return vColor;\n"
     "}\n";
 
+/* The textured half of the same pipeline. Modulating the sampled texel by the
+ * raster colour is what tests/host/gx_soft.c does in place of TEV, and it is
+ * deliberately the same approximation here so the two renderers can still be
+ * diffed frame for frame. Real TEV stage translation replaces both. */
+static const char k_fragment_tex_cg[] =
+    "float4 main(float4 vColor : COLOR, float2 vTexcoord : TEXCOORD0,\n"
+    "            uniform sampler2D sTex : TEXUNIT0) : COLOR\n"
+    "{\n"
+    "  return tex2D(sTex, vTexcoord) * vColor;\n"
+    "}\n";
+
+/* Decoded textures, kept for the life of the run.
+ *
+ * Keyed by (address, format, size) exactly as the host rasteriser keys its
+ * own cache, and like the host's this never invalidates: the game re-binds the
+ * same handful of images every frame and nothing in the boot rewrites one in
+ * place. A texture the game does edit would go stale here, which is a real
+ * limit and the reason the key includes the format and the size rather than
+ * just the address.
+ *
+ * The pixels come out of one arena rather than a memblock each, because a Vita
+ * memblock rounds up to 4 KB and the UI atlases are mostly smaller than that. */
+enum { TEX_CACHE = 512, TEX_ARENA_BYTES = 24u * 1024u * 1024u };
+
+typedef struct {
+  u32 addr, fmt;
+  int w, h;
+  SceGxmTexture tex;
+  int ok;
+} GvTex;
+
 typedef struct {
   const GxRegs *regs;
 
-  SceGxmShaderPatcherId vertex_id, fragment_id;
+  SceGxmShaderPatcherId vertex_id, fragment_id, fragment_tex_id;
   SceGxmVertexProgram *vertex_program;
   SceGxmFragmentProgram *fragment_program;
+  SceGxmFragmentProgram *fragment_tex_program;
+
+  unsigned char *tex_arena;
+  SceUID tex_arena_uid;
+  unsigned tex_arena_used;
+  GvTex tex[TEX_CACHE];
+  unsigned tex_n;
+  unsigned tex_decoded, tex_unmapped, tex_unsupported, tex_nospace;
+  unsigned textured_draws;
+  const GvTex *bound; /* what the context currently has on TEXUNIT0 */
 
   Arena arena[ARENA_COUNT];
   int arena_index;
@@ -178,7 +220,7 @@ static int to_clip(const GxVertex *v, float out[4]) {
 
 static int build_pipeline(void) {
   SceGxmShaderPatcher *patcher = gxm_patcher();
-  const SceGxmProgram *vs, *fs;
+  const SceGxmProgram *vs, *fs, *fs_tex;
   SceGxmVertexAttribute attrs[3];
   SceGxmVertexStream stream;
   const SceGxmProgramParameter *p_pos, *p_col, *p_tex;
@@ -268,7 +310,128 @@ static int build_pipeline(void) {
     snprintf(g_error, sizeof(g_error), "create fragment program: 0x%08x", (unsigned)rc);
     return 0;
   }
+
+  /* The textured variant shares the vertex program, the attributes and the
+   * blend state; only the fragment half differs, so it is a second program
+   * against the same `vs` rather than a second pipeline. */
+  fs_tex = gvsc_program("gv_passthrough_" GV_PASSTHROUGH_VERSION "_tex.frag",
+                        k_fragment_tex_cg, 1);
+  if (!fs_tex) {
+    snprintf(g_error, sizeof(g_error), "textured fragment shader: %s",
+             gvsc_last_error());
+    return 0;
+  }
+  rc = sceGxmShaderPatcherRegisterProgram(patcher, fs_tex, &g.fragment_tex_id);
+  if (rc < 0) {
+    snprintf(g_error, sizeof(g_error), "register textured fragment: 0x%08x",
+             (unsigned)rc);
+    return 0;
+  }
+  rc = sceGxmShaderPatcherCreateFragmentProgram(
+      patcher, g.fragment_tex_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4,
+      SCE_GXM_MULTISAMPLE_NONE, &blend, vs, &g.fragment_tex_program);
+  if (rc < 0) {
+    snprintf(g_error, sizeof(g_error), "create textured fragment program: 0x%08x",
+             (unsigned)rc);
+    return 0;
+  }
   return 1;
+}
+
+/* ------------------------------------------------------------------ */
+
+static unsigned gx_addr_mode(u32 gx_wrap) {
+  switch (gx_wrap & 3u) {
+  case 1: return SCE_GXM_TEXTURE_ADDR_REPEAT;
+  case 2: return SCE_GXM_TEXTURE_ADDR_MIRROR;
+  default: return SCE_GXM_TEXTURE_ADDR_CLAMP;
+  }
+}
+
+/* The texture bound to map 0, decoded and uploaded on first sight.
+ *
+ * Map 0 only, for the same reason the host rasteriser samples map 0 only:
+ * compositing several maps is TEV's job, not a wider sampler's. Returns NULL
+ * whenever the draw should go out untextured, having counted why. */
+static const GvTex *bind_texture(void) {
+  const GxRegs *f = g.regs;
+  GxTexRef ref;
+  GvTex *t;
+  const u8 *src;
+  u32 need, ws, wt;
+  unsigned bytes, i;
+
+  if (!gx_tex_enabled(f) || !gx_tex_describe(f, 0u, &ref))
+    return NULL;
+
+  for (i = 0; i < g.tex_n; i++) {
+    t = &g.tex[i];
+    if (t->addr == ref.addr && t->fmt == ref.fmt && t->w == ref.w &&
+        t->h == ref.h)
+      return t->ok ? t : NULL;
+  }
+  if (g.tex_n >= TEX_CACHE)
+    return NULL;
+
+  t = &g.tex[g.tex_n++];
+  t->addr = ref.addr;
+  t->fmt = ref.fmt;
+  t->w = ref.w;
+  t->h = ref.h;
+  t->ok = 0;
+
+  need = gx_tex_size(ref.fmt, ref.w, ref.h);
+  if (need == 0u) {
+    g.tex_unsupported++;
+    return NULL;
+  }
+  src = f->mem_fn ? f->mem_fn(f->mem_user, ref.addr & 0x3FFFFFFFu, need) : NULL;
+  if (!src) {
+    g.tex_unmapped++;
+    return NULL;
+  }
+
+  /* 16-byte aligned, which is SCE_GXM_TEXTURE_ALIGNMENT; the decoded image is
+   * a multiple of four bytes wide so only the base needs rounding. */
+  bytes = (unsigned)ref.w * (unsigned)ref.h * 4u;
+  g.tex_arena_used = (g.tex_arena_used + (SCE_GXM_TEXTURE_ALIGNMENT - 1u)) &
+                     ~(unsigned)(SCE_GXM_TEXTURE_ALIGNMENT - 1u);
+  if (!g.tex_arena || g.tex_arena_used + bytes > TEX_ARENA_BYTES) {
+    g.tex_nospace++;
+    return NULL;
+  }
+  {
+    unsigned char *px = g.tex_arena + g.tex_arena_used;
+    if (!gx_tex_decode(src, need, ref.fmt, ref.w, ref.h, px)) {
+      g.tex_unsupported++;
+      return NULL;
+    }
+    g.tex_arena_used += bytes;
+    /* The decoder writes R,G,B,A in memory order, which read as a
+     * little-endian word is A<<24|B<<16|G<<8|R -- ABGR. */
+    if (sceGxmTextureInitLinear(&t->tex, px,
+                                SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_ABGR,
+                                (unsigned)ref.w, (unsigned)ref.h, 0) < 0) {
+      g.tex_unsupported++;
+      return NULL;
+    }
+  }
+
+  gx_tex_wrap(f, &ws, &wt);
+  sceGxmTextureSetUAddrMode(&t->tex, gx_addr_mode(ws));
+  sceGxmTextureSetVAddrMode(&t->tex, gx_addr_mode(wt));
+  /* Point sampling, to match the host rasteriser exactly.
+   *
+   * The hardware filtered bilinearly and this will want to as well, but the
+   * host PNG of the same frame is the only oracle there is for what the
+   * console should be drawing, and the first run with textures on it is the
+   * wrong moment to make the two disagree on purpose. One line, once the
+   * frames line up. */
+  sceGxmTextureSetMinFilter(&t->tex, SCE_GXM_TEXTURE_FILTER_POINT);
+  sceGxmTextureSetMagFilter(&t->tex, SCE_GXM_TEXTURE_FILTER_POINT);
+  t->ok = 1;
+  g.tex_decoded++;
+  return t;
 }
 
 int gx_gxm_init(const GxRegs *regs) {
@@ -276,6 +439,7 @@ int gx_gxm_init(const GxRegs *regs) {
   memset(&g, 0, sizeof(g));
   g_error[0] = '\0';
   g.regs = regs;
+  g.tex_arena_uid = -1;
   g.copy_w = EFB_W;
   g.copy_h = 448;
   g.scale = 1.0f;
@@ -291,6 +455,15 @@ int gx_gxm_init(const GxRegs *regs) {
       snprintf(g_error, sizeof(g_error), "geometry arena %d: %s", i, gxm_error());
       return 0;
     }
+  }
+  g.tex_arena = (unsigned char *)gxm_alloc(
+      SCE_KERNEL_MEMBLOCK_TYPE_USER_RW, TEX_ARENA_BYTES,
+      SCE_GXM_TEXTURE_ALIGNMENT, SCE_GXM_MEMORY_ATTRIB_READ, &g.tex_arena_uid);
+  if (!g.tex_arena) {
+    /* Not fatal: without it every draw goes out untextured, which is exactly
+     * what this backend did before textures existed. A run that reports
+     * tex_nospace on every draw is more use than one that refuses to boot. */
+    g.tex_arena_uid = -1;
   }
   if (!build_pipeline())
     return 0;
@@ -310,7 +483,11 @@ void gx_gxm_shutdown(void) {
       sceGxmShaderPatcherReleaseVertexProgram(patcher, g.vertex_program);
     if (g.fragment_program)
       sceGxmShaderPatcherReleaseFragmentProgram(patcher, g.fragment_program);
+    if (g.fragment_tex_program)
+      sceGxmShaderPatcherReleaseFragmentProgram(patcher, g.fragment_tex_program);
   }
+  if (g.tex_arena_uid >= 0)
+    gxm_free(g.tex_arena_uid);
   for (i = 0; i < ARENA_COUNT; i++) {
     gxm_free(g.arena[i].vert_uid);
     gxm_free(g.arena[i].index_uid);
@@ -383,6 +560,7 @@ static void begin_scene_if_needed(void) {
 
   sceGxmSetVertexProgram(ctx, g.vertex_program);
   sceGxmSetFragmentProgram(ctx, g.fragment_program);
+  g.bound = NULL;
   sceGxmSetCullMode(ctx, SCE_GXM_CULL_NONE);
   clear_screen();
   sceGxmSetFrontDepthFunc(ctx, SCE_GXM_DEPTH_FUNC_LESS_EQUAL);
@@ -516,6 +694,23 @@ static void on_prim_end(void *user) {
   if (count == 0u)
     return;
 
+  /* Which program this draw goes out on depends on the texture the BP
+   * registers name right now, so it is decided per primitive -- GX rebinds
+   * between draws as freely as it rewrites the viewport. Both are only
+   * pushed to the context when they actually change. */
+  {
+    const GvTex *tex = bind_texture();
+    if (tex != g.bound) {
+      sceGxmSetFragmentProgram(ctx, tex ? g.fragment_tex_program
+                                        : g.fragment_program);
+      g.bound = tex;
+    }
+    if (tex) {
+      sceGxmSetFragmentTexture(ctx, 0, &tex->tex);
+      g.textured_draws++;
+    }
+  }
+
   set_viewport_from(g.vp);
   sceGxmSetVertexStream(ctx, 0, g.arena[g.arena_index].verts);
   sceGxmDraw(ctx, SCE_GXM_PRIMITIVE_TRIANGLES, SCE_GXM_INDEX_FORMAT_U32,
@@ -614,8 +809,11 @@ void gx_gxm_report(char *out, unsigned n) {
   snprintf(out, n,
            "gxm frames=%u scenes=%u draws=%u vtx=%u drop_full=%u "
            "drop_nomtx=%u drop_novp=%u drop_prim=%u scale=%.3f copy=%ux%u "
-           "dumped=%u",
+           "dumped=%u tex=%u/%u arena=%uk miss_unmap=%u miss_fmt=%u "
+           "miss_space=%u",
            g.frames, g.scenes, g.draws, g.verts, g.dropped_full,
            g.dropped_nomatrix, g.dropped_novp, g.dropped_unsupported,
-           (double)g.scale, g.copy_w, g.copy_h, g.dumped);
+           (double)g.scale, g.copy_w, g.copy_h, g.dumped, g.textured_draws,
+           g.tex_decoded, g.tex_arena_used / 1024u, g.tex_unmapped,
+           g.tex_unsupported, g.tex_nospace);
 }

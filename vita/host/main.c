@@ -414,7 +414,7 @@ static int watchdog(SceSize args, void *argp) {
      * it lands in the one file that keeps being written when the app's own
      * logging has given up. */
     if (g_gfx_ready) {
-      char gbuf[224];
+      char gbuf[352];
       int gn;
       gx_gxm_report(gbuf, sizeof(gbuf) - 2u);
       gn = (int)strlen(gbuf);
@@ -593,7 +593,7 @@ static int run_aot(SceSize args, void *argp) {
   }
 
   static Chassis ch;
-  char buf[280];
+  char buf[352];
   if (!chassis_init(&ch, g_mem1, GC_MAIN_RAM_SIZE, g_mem2, WII_MEM2_SIZE,
                     chassis_log, NULL)) {
     log_line("chassis_init failed");

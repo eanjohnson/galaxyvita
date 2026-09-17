@@ -1,3 +1,9 @@
+/* clock_gettime and CLOCK_MONOTONIC are POSIX, and -std=c11 hides both. The
+ * Vita toolchain exposes them anyway; the host build does not, so the read
+ * timing added for the device broke the host build and nothing noticed until
+ * the next host run. */
+#define _POSIX_C_SOURCE 200809L
+
 #include "disc.h"
 
 #include <stdlib.h>

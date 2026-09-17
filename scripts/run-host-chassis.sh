@@ -26,6 +26,7 @@ CXXINC=("${CINC[@]}" -I"$MG/include" -I"$MG/vendor/dolphin_legacy"
 CSRC=(
   "$ROOT/tests/host/aot_chassis.c"
   "$ROOT/tests/host/gx_soft.c"
+  "$ROOT/runtime/gx_texture.c"
   "$ROOT/runtime/chassis.c"
   "$ROOT/runtime/flipper.c"
   "$ROOT/runtime/ios.c"

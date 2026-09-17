@@ -83,6 +83,7 @@ add_executable(galaxyvita
   runtime/chassis.c
   runtime/flipper.c
   runtime/gx_cp.cpp
+  runtime/gx_texture.c
   # ModernGekko's GPU stack: the FIFO decoder, the register files and the
   # vertex loader are Dolphin's, so only the glue in gx_cp.cpp is ours.
   ${MODERNGEKKO}/src/memory/address_space.cpp
