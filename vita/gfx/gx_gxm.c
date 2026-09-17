@@ -143,6 +143,11 @@ typedef struct {
   unsigned textured_draws;
   unsigned sampler_index;
   unsigned frag_mode;
+  /* The bind's own return code, and what was bound. sceGxmSetFragmentTexture
+   * reports failure and the call site threw it away, so a rejected texture
+   * left the unit unbound -- which samples white, which is the symptom. */
+  int set_tex_rc;
+  int last_tex_w, last_tex_h;
   /* The range of texture coordinates that actually arrived. A
    * correct texture that every fragment samples at one point is
    * indistinguishable from a broken sampler in a frame dump, and
@@ -812,7 +817,11 @@ static void on_prim_end(void *user) {
       g.bound = tex;
     }
     if (tex) {
-      sceGxmSetFragmentTexture(ctx, g.sampler_index, &tex->tex);
+      const int rc = sceGxmSetFragmentTexture(ctx, g.sampler_index, &tex->tex);
+      if (rc < 0)
+        g.set_tex_rc = rc;
+      g.last_tex_w = tex->w;
+      g.last_tex_h = tex->h;
       g.textured_draws++;
     }
   }
@@ -916,13 +925,13 @@ void gx_gxm_report(char *out, unsigned n) {
            "gxm frames=%u scenes=%u draws=%u vtx=%u drop_full=%u "
            "drop_nomtx=%u drop_novp=%u drop_prim=%u scale=%.3f copy=%ux%u "
            "dumped=%u tex=%u/%u arena=%uk miss_unmap=%u miss_fmt=%u "
-           "miss_space=%u smp=%u fdbg=%u uv=[%.3f %.3f]-[%.3f %.3f]",
+           "miss_space=%u smp=%u fdbg=%u bind=0x%08x last=%dx%d uv=[%.3f %.3f]-[%.3f %.3f]",
            g.frames, g.scenes, g.draws, g.verts, g.dropped_full,
            g.dropped_nomatrix, g.dropped_novp, g.dropped_unsupported,
            (double)g.scale, g.copy_w, g.copy_h, g.dumped, g.textured_draws,
            g.tex_decoded, g.tex_arena_used / 1024u, g.tex_unmapped,
            g.tex_unsupported, g.tex_nospace, g.sampler_index,
-           g.frag_mode,
+           g.frag_mode, (unsigned)g.set_tex_rc, g.last_tex_w, g.last_tex_h,
            (double)g.uv_lo[0], (double)g.uv_lo[1], (double)g.uv_hi[0],
            (double)g.uv_hi[1]);
 }

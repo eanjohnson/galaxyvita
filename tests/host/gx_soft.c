@@ -381,6 +381,11 @@ static const Tex *tex_bind(SoftGfx *g, unsigned map) {
   }
   t->px = px;
   g->tex_decoded++;
+  /* Which texture the host binds, so a device that binds a different one for
+   * the same draw is visible. The console decoded a texture the host never
+   * did, which is either a real difference in selection or two runs at two
+   * different moments; this is what settles it. */
+  printf("gfx tex decode addr=%08x fmt=%u %dx%d\n", addr, fmt, w, h);
   return t;
 }
 
