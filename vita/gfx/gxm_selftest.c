@@ -32,6 +32,7 @@
 
 #define REPORT "ux0:data/galaxyvita/gxm_selftest.txt"
 #define FRAME "ux0:data/galaxyvita/gxm_frame.raw"
+#define TEXFRAME "ux0:data/galaxyvita/gxm_texframe.raw"
 #define MARK "ux0:data/galaxyvita/gxm_batch.txt"
 
 /* ShaccCg is the reason for the large heap: it churns tens of megabytes per
@@ -101,7 +102,78 @@ static void build_registers(void) {
 
   /* The copy rectangle the frame is scaled from: width-1 | (height-1) << 10. */
   g_regs.bp[0x4A] = (unsigned)(EFB_W - 1) | ((unsigned)(EFB_H - 1) << 10);
+
+  /* The copy-clear colour the backend now reads rather than hardcoding:
+   * 0x4F is alpha:red and 0x50 is green:blue. The probe below still expects
+   * 0D1A29, so this keeps the existing expectation and exercises the path
+   * that supplies it. */
+  g_regs.bp[0x4F] = (0xFFu << 8) | 0x0Du;
+  g_regs.bp[0x50] = (0x1Au << 8) | 0x29u;
 }
+
+/* A synthetic texture and the registers that bind it.
+ *
+ * The console draws the game's strap screen as a white rectangle from a
+ * texture it decodes perfectly, at texcoords measured to span 0..1, through a
+ * sampler bound without error -- so tex2D returns white and nothing upstream
+ * explains it. Reproducing that here removes the emulator, the FIFO, the
+ * vertex loader and four minutes of guest time from each attempt, and leaves
+ * only the part that is actually in question.
+ *
+ * Four flat quadrants rather than a gradient: a sample that lands in the wrong
+ * place names which corner it came from, and a sample that returns the
+ * unbound-unit default is white, which is none of them. */
+enum { TEX_W = 64, TEX_H = 64, TEX_ADDR = 0x00300000u };
+
+static unsigned char g_tex_tiled[TEX_W * TEX_H * 2];
+
+static const unsigned char k_quadrant[4][3] = {
+    {0xFF, 0x20, 0x20}, /* top-left     red    */
+    {0x20, 0xFF, 0x20}, /* top-right    green  */
+    {0x20, 0x20, 0xFF}, /* bottom-left  blue   */
+    {0xFF, 0xFF, 0x20}  /* bottom-right yellow */
+};
+
+/* RGB565, whose tile is 4x4 texels in 32 bytes, stored big-endian. Written
+ * tiled rather than linear because that is the layout gx_tex_decode() has to
+ * undo, and a decoder fed an untiled image would pass for the wrong reason. */
+static void build_texture(void) {
+  int x, y;
+  for (y = 0; y < TEX_H; y++) {
+    for (x = 0; x < TEX_W; x++) {
+      const unsigned char *c =
+          k_quadrant[((y >= TEX_H / 2) ? 2 : 0) + ((x >= TEX_W / 2) ? 1 : 0)];
+      const unsigned v = (unsigned)((c[0] >> 3) << 11) |
+                         (unsigned)((c[1] >> 2) << 5) | (unsigned)(c[2] >> 3);
+      const int tile = (y / 4) * (TEX_W / 4) + (x / 4);
+      const int in_tile = (y % 4) * 4 + (x % 4);
+      unsigned char *o = g_tex_tiled + (tile * 32) + in_tile * 2;
+      o[0] = (unsigned char)(v >> 8);
+      o[1] = (unsigned char)(v & 0xFFu);
+    }
+  }
+}
+
+static const u8 *tex_mem(void *user, u32 phys, u32 len) {
+  (void)user;
+  if (phys != TEX_ADDR || len > sizeof(g_tex_tiled))
+    return NULL;
+  return g_tex_tiled;
+}
+
+/* GenMode's low nibble is the texture count; IMG0 carries size and format and
+ * IMG3 the address in 32-byte units. Format 4 is RGB565. */
+static void bind_test_texture(void) {
+  g_regs.mem_fn = tex_mem;
+  g_regs.mem_user = NULL;
+  g_regs.bp[0x00] = (g_regs.bp[0x00] & ~0xFu) | 1u;
+  g_regs.bp[0x88] = (unsigned)(TEX_W - 1) | ((unsigned)(TEX_H - 1) << 10) |
+                    (4u << 20);
+  g_regs.bp[0x94] = TEX_ADDR >> 5;
+  g_regs.bp[0x80] = 0u; /* clamp in both axes */
+}
+
+static void unbind_test_texture(void) { g_regs.bp[0x00] &= ~0xFu; }
 
 static GxSink g_sink;
 
@@ -155,6 +227,38 @@ static void draw_scene(void) {
   g_sink.copy(g_sink.user, 1u << 14);
 }
 
+/* A textured vertex. Same as vtx() with texcoords and a white raster colour,
+ * so the modulate in the fragment shader is the identity and whatever reaches
+ * the screen is the sampled texel unaltered. */
+static void vtx_t(float x, float y, float u, float v) {
+  GxVertex vv;
+  memset(&vv, 0, sizeof(vv));
+  vv.pos[0] = x;
+  vv.pos[1] = y;
+  vv.pos[2] = 0.0f;
+  vv.tex0[0] = u;
+  vv.tex0[1] = v;
+  vv.color0[0] = vv.color0[1] = vv.color0[2] = vv.color0[3] = 0xFF;
+  vv.has_color0 = 1;
+  vv.has_tex0 = 1;
+  g_sink.vertex(g_sink.user, &vv);
+}
+
+/* One textured quad over the whole unit square, in its own frame so the
+ * untextured expectations above are unaffected. v runs top-down to match the
+ * GX convention the game's own quads use. */
+static void draw_textured_scene(void) {
+  bind_test_texture();
+  g_sink.prim_begin(g_sink.user, 0x80u, 4); /* quads */
+  vtx_t(0.05f, 0.05f, 0.0f, 1.0f);
+  vtx_t(0.95f, 0.05f, 1.0f, 1.0f);
+  vtx_t(0.95f, 0.95f, 1.0f, 0.0f);
+  vtx_t(0.05f, 0.95f, 0.0f, 0.0f);
+  g_sink.prim_end(g_sink.user);
+  g_sink.copy(g_sink.user, 1u << 14);
+  unbind_test_texture();
+}
+
 /* Where each primitive should have landed, in EFB coordinates with y down,
  * converted to screen by the same pillarbox the sink applies. */
 typedef struct {
@@ -162,6 +266,15 @@ typedef struct {
   float efb_x, efb_y;
   unsigned char r, g, b;
 } Probe;
+
+/* The textured frame. EFB y is down, and v was given top-down, so the texture's
+ * top-left quadrant belongs at the top-left of the quad. */
+static const Probe k_tex_probes[] = {
+    {"tex top-left", 0.25f * EFB_W, 0.25f * EFB_H, 0xFF, 0x20, 0x20},
+    {"tex top-right", 0.75f * EFB_W, 0.25f * EFB_H, 0x20, 0xFF, 0x20},
+    {"tex bottom-left", 0.25f * EFB_W, 0.75f * EFB_H, 0x20, 0x20, 0xFF},
+    {"tex bottom-right", 0.75f * EFB_W, 0.75f * EFB_H, 0xFF, 0xFF, 0x20},
+};
 
 static const Probe k_probes[] = {
     {"clear (corner)", 4.0f, 4.0f, 0x0D, 0x1A, 0x29},
@@ -171,9 +284,35 @@ static const Probe k_probes[] = {
     {"fan", 0.75f * EFB_W, 0.30f * EFB_H, 0xFF, 0xD0, 0x40},
 };
 
+static void run_probes(const unsigned char *frame, const Probe *probes,
+                       unsigned n, float scale, float off_x, float off_y,
+                       unsigned *passed, unsigned *failed) {
+  unsigned i;
+  for (i = 0; i < n; i++) {
+    const Probe *p = &probes[i];
+    int x = (int)(p->efb_x * scale + off_x);
+    int y = (int)(p->efb_y * scale + off_y);
+    const unsigned char *px;
+    int ok;
+    if (x < 0)
+      x = 0;
+    if (y < 0)
+      y = 0;
+    px = frame + ((size_t)y * gxm_width() + (size_t)x) * 4u;
+    /* A8B8G8R8 in memory is R,G,B,A byte order. */
+    ok = px[0] == p->r && px[1] == p->g && px[2] == p->b;
+    out("  %-16s at %3d,%3d  got %02x%02x%02x  want %02x%02x%02x  %s\n", p->what,
+        x, y, px[0], px[1], px[2], p->r, p->g, p->b, ok ? "ok" : "MISMATCH");
+    if (ok)
+      (*passed)++;
+    else
+      (*failed)++;
+  }
+}
+
 int main(void) {
   unsigned char *frame;
-  unsigned i, passed = 0, failed = 0;
+  unsigned passed = 0, failed = 0;
   float scale, off_x, off_y;
   char line[256];
 
@@ -195,6 +334,7 @@ int main(void) {
     out("shader cache: %s\n", gvsc_last_error());
 
   build_registers();
+  build_texture();
   if (!gx_gxm_init(&g_regs)) {
     out("gx_gxm_init failed: %s\n", gx_gxm_error());
     goto done;
@@ -237,26 +377,33 @@ int main(void) {
 
   out("\nprobes (scale=%.4f offset=%.1f,%.1f)\n", (double)scale, (double)off_x,
       (double)off_y);
-  for (i = 0; i < sizeof(k_probes) / sizeof(k_probes[0]); i++) {
-    const Probe *p = &k_probes[i];
-    int x = (int)(p->efb_x * scale + off_x);
-    int y = (int)(p->efb_y * scale + off_y);
-    const unsigned char *px;
-    int ok;
-    if (x < 0)
-      x = 0;
-    if (y < 0)
-      y = 0;
-    px = frame + ((size_t)y * gxm_width() + (size_t)x) * 4u;
-    /* A8B8G8R8 in memory is R,G,B,A byte order. */
-    ok = px[0] == p->r && px[1] == p->g && px[2] == p->b;
-    out("  %-16s at %3d,%3d  got %02x%02x%02x  want %02x%02x%02x  %s\n", p->what,
-        x, y, px[0], px[1], px[2], p->r, p->g, p->b, ok ? "ok" : "MISMATCH");
-    if (ok)
-      passed++;
-    else
-      failed++;
+  run_probes(frame, k_probes, sizeof(k_probes) / sizeof(k_probes[0]), scale,
+             off_x, off_y, &passed, &failed);
+
+  /* The textured frame, drawn twice for the same arena-rotation reason. This
+   * is the part the game cannot answer: the console samples a perfectly
+   * decoded texture and gets white, with every stage between measured and
+   * correct, so the question is whether GXM texturing works here at all. */
+  draw_textured_scene();
+  draw_textured_scene();
+  gx_gxm_report(line, sizeof(line));
+  out("\n%s\n", line);
+  if (!gxm_capture(frame)) {
+    out("textured capture failed\n");
+    goto done;
   }
+  {
+    SceUID fd =
+        sceIoOpen(TEXFRAME, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+    if (fd >= 0) {
+      sceIoWrite(fd, frame, (SceSize)(gxm_width() * gxm_height() * 4u));
+      sceIoClose(fd);
+    }
+  }
+  out("\ntextured probes\n");
+  run_probes(frame, k_tex_probes, sizeof(k_tex_probes) / sizeof(k_tex_probes[0]),
+             scale, off_x, off_y, &passed, &failed);
+
   out("\ngxm_selftest: %u ok, %u failed\n", passed, failed);
 
 done:
