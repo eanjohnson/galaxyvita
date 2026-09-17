@@ -136,6 +136,9 @@ static void write_accel_cal(u8 *p) {
   p[9] = sum;
 }
 
+/* Defined below, next to the rest of the extension port. */
+static void ext_identify(Bt *bt);
+
 void bt_init(Bt *bt) {
   memset(bt, 0, sizeof(*bt));
   /* Addresses are little endian here, the way HCI carries them. The remote's
@@ -154,9 +157,14 @@ void bt_init(Bt *bt) {
   bt->report_mode = 0x30u;
   write_accel_cal(bt->eeprom + 0x16);
   write_accel_cal(bt->eeprom + 0x20);
-  /* Extension identifier, read from 0x04A400FA. All zeroes means "nothing
-   * plugged in", which is what an unencrypted read of an empty port returns. */
   memset(bt->ext_regs, 0, sizeof(bt->ext_regs));
+  /* A Nunchuk is in the port from the start. Super Mario Galaxy requires one
+   * and will not leave "Connect the Nunchuk to Player 1" without it, and the
+   * Vita has a left stick to drive it with. Attaching it here rather than on
+   * the host's say-so is also what the hardware does: the port is populated
+   * before the console is listening. */
+  bt->ext_attached = 1;
+  ext_identify(bt);
   bt->input.acc[0] = 0x80u;
   bt->input.acc[1] = 0x80u;
   /* At rest the remote is held level, so gravity is all on Z. */
@@ -834,12 +842,32 @@ static void send_status(Bt *bt) {
   p[0] = 0xA1u;
   p[1] = 0x20u;
   wr16le(p + 2, bt->input.buttons);
-  p[4] = (u8)((bt->leds & 0xF0u) | (bt->ext_enabled ? 0x02u : 0u) |
+  /* Bit 1 is "an extension is plugged in", which is true as soon as it is --
+   * not "the extension has been initialised". Reporting the latter here meant
+   * the SDK was never told to run the initialisation that would have set it,
+   * and the game sat on its connect-a-Nunchuk screen forever. */
+  p[4] = (u8)((bt->leds & 0xF0u) | (bt->ext_attached ? 0x02u : 0u) |
               (bt->speaker_on ? 0x04u : 0u) | (bt->ir_on ? 0x08u : 0u));
   p[5] = 0;
   p[6] = 0;
   p[7] = 0xC0u; /* battery: full */
   acl_send(bt, bt->cid_intr_host, p, 8);
+}
+
+/* What a Nunchuk answers with when the port is read: its identifier at 0xFA and
+ * a neutral factory calibration at 0x20 and 0x30 -- a centred stick with the
+ * usual travel, and a one-g reading of 0xB3 on each accelerometer axis. The SDK
+ * reads the identifier to find out what is plugged in, so it has to be there
+ * from the moment the extension is attached rather than after the port is
+ * brought up. */
+static void ext_identify(Bt *bt) {
+  static const u8 nunchuk_id[6] = {0, 0, 0xA4u, 0x20u, 0, 0};
+  static const u8 cal[16] = {0x80u, 0x80u, 0x80u, 0x00u, 0xB3u, 0xB3u,
+                             0xB3u, 0x00u, 0xE0u, 0x20u, 0x80u, 0xE0u,
+                             0x20u, 0x80u, 0x00u, 0x00u};
+  memcpy(bt->ext_regs + 0xFAu, nunchuk_id, 6);
+  memcpy(bt->ext_regs + 0x20u, cal, 16);
+  memcpy(bt->ext_regs + 0x30u, cal, 16);
 }
 
 /* The remote's address space. A read or write names it with one control byte:
@@ -939,17 +967,8 @@ static void hid_output(Bt *bt, const u8 *p, u32 len) {
     if (regs && (off & 0xFFFF00u) == 0xA40000u) {
       if ((off & 0xFFu) == 0xF0u && size && d[5] == 0x55u)
         bt->ext_enabled = 1;
-      if (bt->ext_enabled) {
-        static const u8 nunchuk_id[6] = {0, 0, 0xA4u, 0x20u, 0, 0};
-        memcpy(bt->ext_regs + 0xFAu, nunchuk_id, 6);
-        /* Neutral factory calibration: centred stick with the usual travel,
-         * and a one-g reading of 0xB3 on each accelerometer axis. */
-        static const u8 cal[16] = {0x80u, 0x80u, 0x80u, 0x00u, 0xB3u, 0xB3u,
-                                   0xB3u, 0x00u, 0xE0u, 0x20u, 0x80u, 0xE0u,
-                                   0x20u, 0x80u, 0x00u, 0x00u};
-        memcpy(bt->ext_regs + 0x20u, cal, 16);
-        memcpy(bt->ext_regs + 0x30u, cal, 16);
-      }
+      if (bt->ext_enabled)
+        ext_identify(bt);
     }
     send_ack(bt, id, 0);
     return;

@@ -123,6 +123,13 @@ typedef struct Bt {
   u8 leds;
   int ir_on;
   int speaker_on;
+  /* Two different facts, and conflating them deadlocks the handshake.
+   * ext_attached is whether a Nunchuk is in the port: the remote reports it in
+   * every status report, before anyone has touched the extension, and that bit
+   * is the only way the SDK ever learns to look. ext_enabled is whether the
+   * host has since brought the port up by writing 0x55 to 0xA400F0, which is
+   * what puts extension bytes in the input reports. */
+  int ext_attached;
   int ext_enabled;
   u8 eeprom[BT_EEPROM_SIZE];
   /* Extension register file; only the identifier and calibration tail of the
