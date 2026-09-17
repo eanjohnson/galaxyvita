@@ -66,6 +66,21 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   way. `scripts/check-staging.sh` boots the staged subset against the full
   extraction and requires them to be indistinguishable; run it after
   regenerating a census, before staging.
+- **vitacompanion's `launch` kills the app after ~14 seconds.** Started from
+  the LiveArea bubble the same binary runs as long as it likes; started with
+  `launch` it is stopped at ~13.9 s, reliably, whatever it does. This was
+  mistaken for a device-wide application cap and cost most of two days, because
+  the harness was the one component never suspected -- it was the instrument
+  doing the measuring, and a fifty-line control app built to exonerate
+  GalaxyVita died the same way, which looked like proof and was the opposite.
+  Any hardware run shorter than ~14 s is suspect by default. Before concluding
+  anything from a device result, check the app was not simply stopped.
+- **`press` and `release` do not work.** vitacompanion answers "Input pressed."
+  and the input reaches neither SceShell nor the application (verified: an app
+  read `buttons=0x00000000` with cross held across its whole life). The
+  LiveArea cannot be driven from the host, and since `vita_pad` reads through
+  the same `sceCtrlPeekBufferPositive`, synthetic input can never drive the
+  game either.
 - The Vita does not need the whole 3.2 GB extraction. The boot touches 25 MB of
   it; `GV_DISC_CENSUS` records exactly which files, and
   `scripts/stage-media-vita.sh` sends only those.

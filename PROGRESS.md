@@ -2,6 +2,60 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-17 — The cap was vitacompanion's `launch`, and nothing else
+
+The user launched the app from its LiveArea bubble by hand. It ran to
+completion, twice.
+
+Same eboot, same slot, same flag files (`idle.txt` and `nogfx.txt`, so the app
+emulates nothing and draws nothing -- the bare control), same everything. The
+only variable is who started it. `boot.log` is **byte-identical for its first
+seventeen lines** between the two paths and then diverges:
+
+| | via vitacompanion `launch` | from the LiveArea bubble |
+|---|---|---|
+| last boot.log line | `idle: emulating nothing, holding for 60s` | `idle: held 60s without being stopped` + `GalaxyVita phase4 exit` |
+| watchdog ticks | 5, to `t=10s` | 30-31, to `t=60s`/`t=62s` |
+| ended by | stopped mid-hold | itself, cleanly |
+
+The watchdog even matches rate-for-rate while both are alive (`pres=240, 381,
+501, 622, 743` against `241, 362, 482, 603, 724`). One is killed at ten
+seconds; the other runs its full sixty and prints its own exit line. Two bubble
+launches, 05:59 and 06:03, both 60 s.
+
+**So the ~14 s cap is vitacompanion's `launch` command.** Not the device, not
+the plugin set, not `ATTRIBUTE2`, not the missing `livearea` directory, and
+nothing GalaxyVita does. Every hardware result in this project up to here was
+bounded by the test harness rather than by the port, and every entry below that
+says "the app is stopped at ten seconds whatever it does" should be read with
+the narrower true statement: *an app launched by vitacompanion* is.
+
+It also retires the failed bisect honestly. The two survivals that would not
+reproduce were never noise in the app -- they were noise in the launch path,
+which is a thing that plausibly varies run to run in a way an app's own
+structure cannot.
+
+What this does not touch: the census fix, which was reproduced on the host by
+mirroring the console's file set and never depended on a device run.
+
+The cost of the mistake was most of two days, and the shape of it is worth
+keeping: the harness was the one component never under suspicion, because it
+was the instrument doing the measuring. Nine suspects were cleared one at a
+time, each with real evidence, and every one of them was innocent. The control
+app was built specifically to find what GalaxyVita was doing wrong, and its
+13-tick death was read as proof the cause was device-wide -- when it was
+actually proof the cause was in the only thing the control still shared with
+the app, which was the launch.
+
+**The open problem is now a harness problem**, and it collides with the
+standing constraint that nobody babysits the console: the app must be startable
+unattended, and `launch` is what breaks it. Next, in order: whether
+vitacompanion's `launch` is itself killing the app (a held handle or a timer on
+its side, in which case dropping the control socket after launching may be
+enough); and failing that a second launch path -- `sceAppMgrLaunchAppByName`
+from a small loader, or registering the title properly so the shell owns it the
+way it owns VitaShell.
+
 ## 2026-09-17 — The bubble launch cannot be driven, and two more suspects fall
 
 **vitacompanion's synthetic input does not work.** `press <button>` answers
@@ -108,6 +162,12 @@ What is established: every application tested is stopped ~13.9 s after launch,
 the timing is sharply repeatable, it is unrelated to load (idle and flat-out
 die alike), and twice something suppressed it for a full 60 s and did not do so
 again.
+
+> **Superseded 2026-09-17.** Every run behind this paragraph was started by
+> vitacompanion `launch`, which is the thing doing the stopping. Launched from
+> the LiveArea the same binary runs to completion. The two unexplained 60 s
+> survivals were the launch path being intermittent, not the app.
+
 
 Not yet tried, and the obvious next move: the plugin set. `ur0:tai/config.txt`
 loads NoPowerLimits, CapUnlocker, PSVshellPlus (kernel and shell), catlog,
