@@ -38,7 +38,12 @@ constexpr std::uint8_t kBpSetDrawDone = 0x45;
 constexpr std::uint8_t kBpTokenValue = 0x47;
 constexpr std::uint8_t kBpTokenInterrupt = 0x48;
 constexpr std::uint8_t kBpCopyExecute = 0x52;
-constexpr std::uint32_t kTraceBytes = 1u << 20;
+/* The trace captures from the start of the stream, so it has to be big
+ * enough to still be recording where the decode goes wrong. SMG's first
+ * unknown opcode is at stream byte 4456810, which 1 MiB never reached --
+ * the capture ran out four megabytes before the interesting part. Host
+ * only, and a one-off allocation. */
+constexpr std::uint32_t kTraceBytes = 16u << 20;
 
 /* The sink speaks raw GX opcodes because the software rasteriser assembles
  * strips, fans and quads itself. GxCommandProcessor decodes the opcode to an
@@ -112,8 +117,48 @@ struct GxCp final
    * only additions are the register mirror the rasteriser reads and the PE
    * events the Flipper drains. */
 
+  /* --- last-commands ring, for pinning a decode desync. ------------------
+   * An unknown opcode says where the parse stopped agreeing with the game but
+   * not why. Why is almost always a command a few back whose length we got
+   * wrong -- a vertex-format register write, most often -- so keep the tail of
+   * the decode and print it alongside the desync. Costs one store per command
+   * and nothing else; the ring is fixed-size and never allocates. */
+  struct CmdNote
+  {
+    std::uint64_t at;
+    char kind;
+    std::uint32_t a;
+    std::uint32_t b;
+  };
+  static constexpr std::uint32_t kNotes = 512;
+  CmdNote notes[kNotes]{};
+  std::uint64_t note_n = 0;
+
+  void Note(char kind, std::uint32_t a, std::uint32_t b)
+  {
+    notes[note_n++ % kNotes] = CmdNote{bytes_in, kind, a, b};
+  }
+
+  void DumpNotes()
+  {
+    std::fprintf(stderr, "  gx vcd lo=0x%08x hi=0x%08x\n", regs.vcd_low,
+                 regs.vcd_high);
+    for (int i = 0; i < 8; ++i)
+      std::fprintf(stderr, "  gx vat[%d] = 0x%08x 0x%08x 0x%08x\n", i,
+                   regs.vat[i][0], regs.vat[i][1], regs.vat[i][2]);
+    const std::uint64_t first = note_n > kNotes ? note_n - kNotes : 0;
+    for (std::uint64_t i = first; i < note_n; ++i)
+    {
+      const CmdNote &n = notes[i % kNotes];
+      std::fprintf(stderr, "  gx cmd[%llu] at=%llu %c a=0x%08x b=0x%08x\n",
+                   (unsigned long long)i, (unsigned long long)n.at, n.kind, n.a, n.b);
+    }
+    std::fflush(stderr);
+  }
+
   void LoadCpRegister(std::uint8_t command, std::uint32_t value)
   {
+    Note('C', command, value);
     switch (command & 0xF0u)
     {
     case 0x50: regs.vcd_low = value; break;
@@ -129,12 +174,14 @@ struct GxCp final
   void LoadXfRegisters(std::uint16_t address,
                        std::span<const std::uint32_t> values)
   {
+    Note('X', address, static_cast<std::uint32_t>(values.size()));
     state.LoadXfRegisters(address, values);
     MirrorXf(address, values.size());
   }
 
   void LoadBpRegister(std::uint8_t command, std::uint32_t value)
   {
+    Note('B', command, value);
     state.LoadBpRegister(command, value);
     /* Read the stored value back rather than mirroring the raw one: BP
      * register 0xFE is a write mask that makes the *next* BP write partial,
@@ -175,6 +222,8 @@ struct GxCp final
   void LoadIndexedXf(std::uint8_t array, std::uint16_t index, std::uint16_t address,
                      std::uint8_t size)
   {
+    Note('I', (static_cast<std::uint32_t>(array) << 24) | index,
+         (static_cast<std::uint32_t>(address) << 8) | size);
     state.LoadIndexedXf(array, index, address, size);
     /* The mirror has to see indexed loads too: they are how the projection and
      * position matrices arrive, and the rasteriser reads those out of xf[]. */
@@ -196,6 +245,7 @@ struct GxCp final
   {
     ++draws;
     last_opcode = OpcodeFor(packet.primitive);
+    Note('D', OpcodeFor(packet.primitive), packet.vertex_count);
     state.Draw(packet);
   }
 
@@ -205,6 +255,7 @@ struct GxCp final
      * itself. Counted because a list that fails to resolve is executed as
      * nothing at all, which is indistinguishable from geometry the game never
      * submitted. */
+    Note('L', address, size);
     ++dls;
     dl_bytes += size;
     if (memory.Resolve(address, size) == nullptr)
@@ -218,7 +269,11 @@ struct GxCp final
   /* From the command processor. Forwarding into GxStateBackend is what makes
    * it notify the render device -- which is CpDevice, a different object, so
    * this terminates. */
-  void InvalidateVertexCache() { state.InvalidateVertexCache(); }
+  void InvalidateVertexCache()
+  {
+    Note('V', 0, 0);
+    state.InvalidateVertexCache();
+  }
 
   /* --- GxRenderDevice: decoded geometry out. ---------------------------- */
 
@@ -388,6 +443,7 @@ void gx_cp_write(GxCp *cp, u64 value, u8 size)
                  static_cast<unsigned>(cp->processor.GetBufferedByteCount()),
                  (unsigned long long)cp->processor.GetCommandCount());
     std::fflush(stderr);
+    cp->DumpNotes();
   }
 }
 

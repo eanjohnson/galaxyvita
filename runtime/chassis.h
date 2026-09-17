@@ -94,6 +94,9 @@ typedef struct Chassis {
   int stop_on_fifo;
   u32 hot_pc[CHASSIS_HOT_SLOTS];
   u32 hot_hits[CHASSIS_HOT_SLOTS];
+  /* WUDIsLinkedWBC instrumentation -- see hle_wud_is_ready in chassis.c. */
+  u32 wud_log;
+  int wud_real;
 } Chassis;
 
 int chassis_init(Chassis *ch, void *mem1, u32 mem1_size, void *mem2,

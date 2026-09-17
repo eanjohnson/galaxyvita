@@ -76,10 +76,29 @@ static const u32 k_smc_sites[] = {
  * loop, so matching on the entry PC catches every call site. */
 typedef void (*HleFn)(Chassis *ch);
 
+/* Defined below, next to the other logging helpers. */
+static void ch_logf(Chassis *ch, const char *fmt, ...);
+
 /* WUDIsLinkedWBC() -- WUDInit busy-waits on this until the Bluetooth state
  * machine reaches state 5. With no dongle the state byte at 0x80692846 never
- * leaves 0, so the wait never ends; report the stack as up. */
-static void hle_wud_is_ready(Chassis *ch) { ch->cpu.gpr[3] = 1u; }
+ * leaves 0, so the wait never ends; report the stack as up.
+ *
+ * That was written when there was no Bluetooth stack at all. There is one now,
+ * and it completes a full HCI bring-up, so the state machine may well reach 5
+ * on its own -- in which case this hook is not merely redundant but harmful,
+ * because answering "linked" early skips whatever WUDInit does after the wait,
+ * and WPAD registration hangs off that. GV_WUD_LOG=n prints what the real
+ * state byte says on the first n calls, which settles it without changing
+ * behaviour; GV_WUD_REAL=1 then answers from the byte instead of lying. */
+static void hle_wud_is_ready(Chassis *ch) {
+  u8 state = mem_read8(&ch->cpu, 0x80692846u);
+  if (ch->wud_log) {
+    ch->wud_log--;
+    ch_logf(ch, "wud is_linked: state=0x%02x at hits=%u", state,
+            ch->dispatch_hits);
+  }
+  ch->cpu.gpr[3] = ch->wud_real ? (state == 5u) : 1u;
+}
 
 /* The Home Button menu. SMG keeps it out of main.dol: the function at
  * 0x803ACA54 loads /ModuleData/HomeButtonMenuWrapperRSO.rso into MEM2, runs the

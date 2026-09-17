@@ -532,6 +532,30 @@ static u64 read_flipper(Flipper *f, u32 off, u8 size) {
 static void write_flipper(Flipper *f, CPUState *cpu, GxCp *gx, u32 off,
                           u64 value, u8 size) {
   if (off >= 0x8000u && off < 0x9000u) {
+    /* The write-gather pipe does not address the GP directly: it lands at the
+     * PI FIFO write pointer, and PI_FIFO_BASE says where that is.
+     * GXBeginDisplayList retargets it at a buffer in memory and GXEndDisplayList
+     * puts it back, which is the whole mechanism by which a display list is
+     * recorded. Feeding every WGP write to the command processor recorded no
+     * list and submitted its contents as commands instead: SMG's first model
+     * draw arrived as indexed geometry against a descriptor set for direct
+     * floats, the parse lost sync on the vertex stride, and the boot stopped
+     * there. The list is the payload, not the stream, unless the pipe is
+     * pointed at the GP FIFO -- which is what the CP's own base says. */
+    const u32 cp_base = ((u32)f->cp[0x22 / 2] << 16) | (u32)f->cp[0x20 / 2];
+    if (f->pi_fifo_base != cp_base) {
+      for (u8 i = 0; i < size; i++) {
+        mem_write8(cpu, 0x80000000u + f->pi_fifo_wptr,
+                   (u8)(value >> ((size - i - 1u) * 8u)));
+        f->pi_fifo_wptr += 1u;
+        /* PI_FIFO_END is the last address in the buffer; the pipe wraps to the
+         * base rather than running past it. A display list never gets there in
+         * practice, but the GP FIFO is a ring and this is the same register. */
+        if (f->pi_fifo_end != 0u && f->pi_fifo_wptr > f->pi_fifo_end)
+          f->pi_fifo_wptr = f->pi_fifo_base;
+      }
+      return;
+    }
     if (gx) {
       gx_cp_write(gx, value, size);
       pe_drain(f, gx);
@@ -579,6 +603,9 @@ static void write_flipper(Flipper *f, CPUState *cpu, GxCp *gx, u32 off,
       f->pi_mask = (u32)value;
       break;
     case 0x0C:
+      /* Where the write-gather pipe lands. GXBeginDisplayList retargets it at
+       * a buffer in memory and GXEndDisplayList puts it back; see the WGP case
+       * in write_flipper for why that distinction has to be honoured. */
       f->pi_fifo_base = (u32)value;
       break;
     case 0x10:

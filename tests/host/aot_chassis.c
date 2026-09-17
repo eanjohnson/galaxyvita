@@ -1,4 +1,7 @@
 /* Host-side chassis: load RMGE01 DOL, dispatch AOT until FIFO/cap. */
+/* The build is -std=c11, which hides POSIX; sigaction and alarm need this. */
+#define _POSIX_C_SOURCE 200809L
+
 #include "chassis.h"
 #include "gx_soft.h"
 
@@ -96,6 +99,21 @@ int main(int argc, char **argv) {
     const char *r = getenv("GV_BT_REPORTS");
     if (r)
       ch.ios.bt.log_reports = (u32)strtoul(r, NULL, 10);
+    /* The IOS line budget is shared with Bluetooth, which issues tens of
+     * thousands of ioctlvs -- so by the time the game opens a file late in the
+     * boot there is no budget left to say what happened to it. */
+    const char *il = getenv("GV_IOS_LOG");
+    if (il)
+      ch.ios.log_left = (u32)strtoul(il, NULL, 10);
+  }
+  {
+    /* WUDIsLinkedWBC: GV_WUD_LOG=n reports the real state byte without
+     * changing what the hook answers; GV_WUD_REAL=1 answers from it. */
+    const char *wl = getenv("GV_WUD_LOG");
+    if (wl)
+      ch.wud_log = (u32)strtoul(wl, NULL, 10);
+    const char *wr = getenv("GV_WUD_REAL");
+    ch.wud_real = wr && *wr != '0';
   }
   {
     const char *from = getenv("GV_CENSUS_FROM");
@@ -157,10 +175,21 @@ int main(int argc, char **argv) {
       gx_cp_trace(ch.gx, tp);
       g_trace_cp = ch.gx;
       g_trace_ch = &ch;
-      signal(SIGALRM, on_trace_alarm);
+      /* sigaction, not signal: with SysV semantics the handler is reset to
+       * SIG_DFL once it has run, so the second SIGALRM killed the process
+       * outright ("Alarm clock") five seconds in. That made GV_GX_TRACE
+       * useless for any run long enough to be worth tracing -- and the
+       * failure looked like a hang being cut short rather than the sampler
+       * shooting it. */
+      struct sigaction sa;
+      memset(&sa, 0, sizeof(sa));
+      sa.sa_handler = on_trace_alarm;
+      sa.sa_flags = SA_RESTART;
+      sigaction(SIGALRM, &sa, NULL);
       alarm(5);
-      signal(SIGINT, on_trace_signal);
-      signal(SIGTERM, on_trace_signal);
+      sa.sa_handler = on_trace_signal;
+      sigaction(SIGINT, &sa, NULL);
+      sigaction(SIGTERM, &sa, NULL);
     }
   }
   if (!chassis_load_dol(&ch, dol))
@@ -308,6 +337,11 @@ int main(int argc, char **argv) {
   for (u32 i = 0; i < ch.flipper.unique_n && i < 32; i++)
     printf(" 0x%08x", ch.flipper.unique_ea[i]);
   printf("\n");
+
+  /* The signal handler is not the only way out: a run that reaches its block
+   * cap exits here, and until this flush existed that run wrote the whole
+   * capture into free() and reported nothing. */
+  gx_cp_trace_flush(ch.gx);
 
   int ok = ch.dispatch_hits > 0 && ch.stop_reason != CHASSIS_STOP_SMC;
   chassis_shutdown(&ch);
