@@ -52,6 +52,7 @@ link() {
     "$ROOT/vita/gfx/gxm.c" \
     "$ROOT/vita/gfx/gx_gxm.c" \
     "$ROOT/vita/gfx/shader_cache.c" \
+    "$ROOT/runtime/gx_texture.c" \
     "$BUILD/pad.s" \
     -lSceShaccCg_stub -lSceGxm_stub -lSceDisplay_stub \
     -lSceSysmodule_stub -lSceAppMgr_stub -lSceCommonDialog_stub \
