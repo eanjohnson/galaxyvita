@@ -2,6 +2,54 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-16 — The boot was never stalling; the app was being stopped
+
+With the census fixed the console ran materially further -- past the old
+ceiling to 1,121,547 blocks, with the dispatch rate rising (+104k, +199k,
++332k, +486k per two seconds) instead of decaying as it used to. Then every
+thread went quiet at once, as before.
+
+**It is not a stall and it is not at a block count.** `idle.txt` (GV_IDLE=1)
+runs the whole setup and emulates nothing: the watchdog stops at t=10s with
+`hits=0`, no FIFO, no disc, no emulation. The app is stopped 10-12 seconds
+after launch whatever it does. The "block count it stalls at" was only ever
+how far the emulator got in ten seconds, which is why it moved from 810k to
+1.2M when the media fix made the boot faster -- and why the earlier
+"time is the constant" guess, retracted at the time as unfalsifiable, was
+pointing the right way.
+
+Ruled out, each with evidence rather than argument:
+
+- *The emulator, entirely.* An idle run with no emulation dies identically.
+- *The graphics backend.* `GV_NOGFX=1` reached 1,232,689 blocks, same end.
+- *Memory.* Free memory is flat on every tick to the last line before death:
+  `free=63488k cdram=93184k phy=26624k`, 62 MB spare, never moving.
+- *File I/O.* The last line before death reports `wr=131 probe=0 lost=0`: the
+  held-handle write succeeded, a fresh open succeeded, no tick was lost.
+- *The watchdog exiting on an error.* It used to `return` when a reopen
+  failed. It no longer can, and still stops at t=10s.
+- *A crash.* Core dumps work on this device -- nine were written earlier the
+  same day, 100-800 KB each -- and these runs produce none.
+- *Sleep, screen-off, or a recoverable suspend.* `screen on`, `nosleep on` and
+  a button press after it goes quiet do not wake it; it never resumes, over
+  160 s of watching.
+- *Never presenting a frame.* A display heartbeat holding a black frame, with
+  graphics off so it genuinely runs, changes nothing.
+- *System callbacks never being deliverable.* Nothing in this app was ever in
+  a state to receive one; the CB forms of the thread waits change nothing.
+- *A safe fself.* `vita_create_self(... UNSAFE)` already.
+
+So: a Vita application here is terminated about ten to twelve seconds after
+launch, for a reason not yet found, and no run of this emulator has ever
+outlived it. That reframes the ceiling on every device result in this log.
+
+One untested hypothesis worth recording, not yet evidence: the trap in
+CLAUDE.md that "ShaccCg wedges after 5-9 compiles in one process" has the
+same shape, and a warmer that has to batch-and-resume across launches is what
+you would build if launches were silently capped at ten seconds. The selftest
+does not settle it -- it only ever needed two compiles and finished in
+seconds, passing 5/5 either way.
+
 ## 2026-09-16 — The stall past it was one file the census lost
 
 The boot got past the audio-register wall and stopped again at 770k-810k
