@@ -148,6 +148,8 @@ typedef struct {
    * left the unit unbound -- which samples white, which is the symptom. */
   int set_tex_rc;
   int validate_rc;
+  int init_rc;
+  unsigned tex_init_mode;
   int last_tex_w, last_tex_h;
   /* The range of texture coordinates that actually arrived. A
    * correct texture that every fragment samples at one point is
@@ -191,6 +193,18 @@ static char g_error[256];
 static unsigned g_frag_mode;
 
 void gx_gxm_set_frag_mode(unsigned mode) { g_frag_mode = mode; }
+
+/* How a decoded image is turned into an SceGxmTexture. Every stage of the
+ * texture path has been measured correct on the console and tex2D still
+ * returns white, so the remaining candidates are all in this one call: the
+ * swizzle convention for U8U8U8U8, whether the implicit stride is what the
+ * hardware wants, and whether a linear texture is accepted here at all.
+ * Each device run now costs a reboot's worth of risk, so they are selectable
+ * and a single run can try all of them rather than one per upload. */
+static unsigned g_tex_init_mode;
+
+void gx_gxm_set_tex_init_mode(unsigned mode) { g_tex_init_mode = mode; }
+
 
 /* ------------------------------------------------------------------ */
 
@@ -470,11 +484,30 @@ static const GvTex *bind_texture(void) {
     g.tex_arena_used += bytes;
     /* The decoder writes R,G,B,A in memory order, which read as a
      * little-endian word is A<<24|B<<16|G<<8|R -- ABGR. */
-    if (sceGxmTextureInitLinear(&t->tex, px,
-                                SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_ABGR,
-                                (unsigned)ref.w, (unsigned)ref.h, 0) < 0) {
-      g.tex_unsupported++;
-      return NULL;
+    {
+      int irc;
+      switch (g.tex_init_mode) {
+      case 1: /* the other swizzle, in case the naming convention is inverted */
+        irc = sceGxmTextureInitLinear(&t->tex, px,
+                                      SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_RGBA,
+                                      (unsigned)ref.w, (unsigned)ref.h, 0);
+        break;
+      case 2: /* an explicit byte stride rather than the implicit one */
+        irc = sceGxmTextureInitLinearStrided(
+            &t->tex, px, SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_ABGR,
+            (unsigned)ref.w, (unsigned)ref.h, (unsigned)ref.w * 4u);
+        break;
+      default:
+        irc = sceGxmTextureInitLinear(&t->tex, px,
+                                      SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_ABGR,
+                                      (unsigned)ref.w, (unsigned)ref.h, 0);
+        break;
+      }
+      g.init_rc = irc;
+      if (irc < 0) {
+        g.tex_unsupported++;
+        return NULL;
+      }
     }
     /* GXM will tell us outright whether this texture is usable, which is worth
      * more than any amount of reasoning about alignment and stride rules: a
@@ -526,6 +559,7 @@ int gx_gxm_init(const GxRegs *regs) {
   g.regs = regs;
   g.tex_arena_uid = -1;
   g.frag_mode = g_frag_mode;
+  g.tex_init_mode = g_tex_init_mode;
   g.copy_w = EFB_W;
   g.copy_h = 448;
   g.scale = 1.0f;
@@ -915,6 +949,19 @@ static void on_copy(void *user, u32 data) {
   present();
 }
 
+void gx_gxm_flush_textures(void) {
+  /* Forget every decoded texture so the next bind re-creates it under whatever
+   * init mode is now selected. The caller must have waited for the GPU first:
+   * the arena is reused from the start, and a scene still in flight is still
+   * reading it. Only the selftest needs this -- the game never changes mode
+   * mid-run. */
+  g.tex_n = 0;
+  g.tex_arena_used = 0;
+  g.tex_decoded = 0;
+  g.bound = NULL;
+  memset(g.tex, 0, sizeof(g.tex));
+}
+
 void gx_gxm_sink(GxSink *out) {
   memset(out, 0, sizeof(*out));
   out->user = &g;
@@ -931,13 +978,14 @@ void gx_gxm_report(char *out, unsigned n) {
            "gxm frames=%u scenes=%u draws=%u vtx=%u drop_full=%u "
            "drop_nomtx=%u drop_novp=%u drop_prim=%u scale=%.3f copy=%ux%u "
            "dumped=%u tex=%u/%u arena=%uk miss_unmap=%u miss_fmt=%u "
-           "miss_space=%u smp=%u fdbg=%u bind=0x%08x valid=0x%08x last=%dx%d uv=[%.3f %.3f]-[%.3f %.3f]",
+           "miss_space=%u smp=%u fdbg=%u bind=0x%08x init=0x%08x valid=0x%08x imode=%u last=%dx%d uv=[%.3f %.3f]-[%.3f %.3f]",
            g.frames, g.scenes, g.draws, g.verts, g.dropped_full,
            g.dropped_nomatrix, g.dropped_novp, g.dropped_unsupported,
            (double)g.scale, g.copy_w, g.copy_h, g.dumped, g.textured_draws,
            g.tex_decoded, g.tex_arena_used / 1024u, g.tex_unmapped,
            g.tex_unsupported, g.tex_nospace, g.sampler_index,
-           g.frag_mode, (unsigned)g.set_tex_rc, (unsigned)g.validate_rc,
+           g.frag_mode, (unsigned)g.set_tex_rc, (unsigned)g.init_rc,
+           (unsigned)g.validate_rc, g.tex_init_mode,
            g.last_tex_w, g.last_tex_h,
            (double)g.uv_lo[0], (double)g.uv_lo[1], (double)g.uv_hi[0],
            (double)g.uv_hi[1]);

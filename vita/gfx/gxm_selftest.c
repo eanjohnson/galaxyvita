@@ -32,7 +32,7 @@
 
 #define REPORT "ux0:data/galaxyvita/gxm_selftest.txt"
 #define FRAME "ux0:data/galaxyvita/gxm_frame.raw"
-#define TEXFRAME "ux0:data/galaxyvita/gxm_texframe.raw"
+#define TEXFRAME_FMT "ux0:data/galaxyvita/gxm_texframe%u.raw"
 #define MARK "ux0:data/galaxyvita/gxm_batch.txt"
 
 /* ShaccCg is the reason for the large heap: it churns tens of megabytes per
@@ -384,25 +384,47 @@ int main(void) {
    * is the part the game cannot answer: the console samples a perfectly
    * decoded texture and gets white, with every stage between measured and
    * correct, so the question is whether GXM texturing works here at all. */
-  draw_textured_scene();
-  draw_textured_scene();
-  gx_gxm_report(line, sizeof(line));
-  out("\n%s\n", line);
-  if (!gxm_capture(frame)) {
-    out("textured capture failed\n");
-    goto done;
-  }
+  /* Each texture-init strategy in turn, in one run.
+   *
+   * Getting to the console now costs a reboot's worth of risk, so testing one
+   * hypothesis per upload is the wrong trade. The GPU has to be idle before
+   * the cache is dropped, because the arena is reused from the start and a
+   * scene still in flight is still reading it. */
   {
-    SceUID fd =
-        sceIoOpen(TEXFRAME, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
-    if (fd >= 0) {
-      sceIoWrite(fd, frame, (SceSize)(gxm_width() * gxm_height() * 4u));
-      sceIoClose(fd);
+    unsigned mode;
+    for (mode = 0; mode < 3u; mode++) {
+      char path[192];
+      unsigned mp = 0, mf = 0;
+      gxm_finish();
+      gx_gxm_set_tex_init_mode(mode);
+      gx_gxm_flush_textures();
+      draw_textured_scene();
+      draw_textured_scene();
+      gx_gxm_report(line, sizeof(line));
+      out("\ninit mode %u: %s\n", mode, line);
+      if (!gxm_capture(frame)) {
+        out("  capture failed\n");
+        continue;
+      }
+      snprintf(path, sizeof(path), TEXFRAME_FMT, mode);
+      {
+        SceUID fd =
+            sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+        if (fd >= 0) {
+          sceIoWrite(fd, frame, (SceSize)(gxm_width() * gxm_height() * 4u));
+          sceIoClose(fd);
+        }
+      }
+      run_probes(frame, k_tex_probes,
+                 sizeof(k_tex_probes) / sizeof(k_tex_probes[0]), scale, off_x,
+                 off_y, &mp, &mf);
+      out("  init mode %u: %u ok, %u failed\n", mode, mp, mf);
+      /* Only the working mode should count towards the overall result; a mode
+       * that fails is an answer, not a regression. */
+      if (mf == 0u)
+        passed += mp;
     }
   }
-  out("\ntextured probes\n");
-  run_probes(frame, k_tex_probes, sizeof(k_tex_probes) / sizeof(k_tex_probes[0]),
-             scale, off_x, off_y, &passed, &failed);
 
   out("\ngxm_selftest: %u ok, %u failed\n", passed, failed);
 

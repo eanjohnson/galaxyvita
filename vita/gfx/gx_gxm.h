@@ -42,6 +42,17 @@ void gx_gxm_dump_frames(const char *dir, unsigned count, unsigned stride);
  * per hypothesis. Must be called before gx_gxm_init(). */
 void gx_gxm_set_frag_mode(unsigned mode);
 
+/* How a decoded image becomes an SceGxmTexture: 0 linear with the ABGR
+ * swizzle, 1 linear with RGBA, 2 linear with an explicit byte stride. The
+ * console samples a verifiably correct texture as white and every stage
+ * around this call has been measured, so the remaining candidates all live
+ * in it; selecting them lets one device run try each. */
+void gx_gxm_set_tex_init_mode(unsigned mode);
+
+/* Drop the texture cache so the next bind re-creates under a new init mode.
+ * Wait for the GPU first. For the selftest; the game never needs it. */
+void gx_gxm_flush_textures(void);
+
 const char *gx_gxm_error(void);
 
 /* One line for the boot log: frames presented, draws, vertices, and what was
