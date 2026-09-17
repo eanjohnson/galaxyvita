@@ -90,6 +90,21 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   When a GX parse goes wrong, check what the stream should have contained
   before suspecting the decode -- an independent walker over the capture is
   cheap and settles it either way.
+- **Do not abort an FTP transfer mid-stream, and a wedged FTP is not a power
+  cycle.** `curl --max-time` killing a RETR part-way, or reading a frame dump
+  the app is still writing, leaves ftpvita unable to serve anything: port 1337
+  stops answering while vitacompanion on 1338 keeps replying normally, which
+  reads exactly like a hung application and is not one. `destroy` does not
+  clear it. vitacompanion's own `reboot` does, and the console comes back in
+  about a minute with nothing lost -- so this never needs anyone at the device.
+  Let transfers finish; if a dump may still be being written, wait for the size
+  to stop changing rather than capping the transfer.
+- **The frame dump is card I/O in the render thread.** Each frame is 2 MB and
+  the write is synchronous, so a small `dump.txt` stride queues tens of
+  megabytes in a couple of seconds of guest time and starves everything else
+  sharing the card, ftpvita included. Stride 8 was enough to do it. Keep the
+  product of count and frequency low; the useful frames are rarely so close
+  together that it matters.
 - The Vita does not need the whole 3.2 GB extraction. The boot touches 25 MB of
   it; `GV_DISC_CENSUS` records exactly which files, and
   `scripts/stage-media-vita.sh` sends only those.
