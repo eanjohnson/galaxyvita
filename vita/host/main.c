@@ -404,6 +404,23 @@ static int watchdog(SceSize args, void *argp) {
                  hits == last ? "  STALLED" : "",
                  log_stuck ? "  LOGLOCKED" : "");
     wrote = sceIoWrite(fd, buf, (SceSize)(n > 0 ? n : 0));
+    /* What the GXM backend has actually drawn, every tick.
+     *
+     * gx_gxm_report() existed from the day the backend did and had no caller
+     * but the shutdown path -- so it printed only for a run that ended
+     * cleanly, and no long device run ever has. The first console frames were
+     * diagnosed by pulling raw framebuffers off the card instead, which works
+     * and costs a round trip per frame. This is the same answer for free, and
+     * it lands in the one file that keeps being written when the app's own
+     * logging has given up. */
+    if (g_gfx_ready) {
+      char gbuf[224];
+      int gn;
+      gx_gxm_report(gbuf, sizeof(gbuf) - 2u);
+      gn = (int)strlen(gbuf);
+      gbuf[gn++] = '\n';
+      sceIoWrite(fd, gbuf, (SceSize)gn);
+    }
     /* A held handle buffers: without this the last ticks before a wedge sit in
      * the cache and never reach the card, which reads from the host exactly
      * like a thread that stopped running. The whole point of this thread is to
@@ -462,6 +479,16 @@ static int display_worker(SceSize args, void *argp) {
   memset(fb, 0, 2 * 1024 * 1024);
   log_line("display heartbeat up");
   while (!g_cpu_done) {
+    /* Keep the console awake from inside the app, every iteration of the only
+     * thread that runs for the whole life of the run.
+     *
+     * Auto-standby was killing bubble launches at ~3 minutes, and the run that
+     * reached 708 s only did so because a host-side loop was re-asserting
+     * `nosleep on` over vitacompanion every 30 s -- which is exactly the
+     * someone-at-the-device step this project is not allowed to need. DEFAULT
+     * cancels the suspend, OLED-off and dimming timers together, so the screen
+     * also stops dimming while a long run is being watched. */
+    sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DEFAULT);
     if (!g_gfx_ready) {
       SceDisplayFrameBuf f;
       memset(&f, 0, sizeof(f));
