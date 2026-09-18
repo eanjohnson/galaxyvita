@@ -53,6 +53,15 @@ void gx_gxm_set_frag_mode(unsigned mode);
  * in it; selecting them lets one device run try each. */
 void gx_gxm_set_tex_init_mode(unsigned mode);
 
+/* Skip the full GPU wait at the end of each frame.
+ *
+ * A measurement knob, not a feature: with the wait gone the emulated CPU can
+ * overwrite a vertex arena the GPU is still reading, so the frames are not to
+ * be trusted. What it measures is honest, because the emulator does exactly
+ * the same work either way -- it answers whether the GPU is what the frame
+ * rate is waiting on. Must be called before gx_gxm_init(). */
+void gx_gxm_set_no_finish(unsigned on);
+
 /* Drop the texture cache so the next bind re-creates under a new init mode.
  * Wait for the GPU first. For the selftest; the game never needs it. */
 void gx_gxm_flush_textures(void);

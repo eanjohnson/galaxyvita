@@ -46,6 +46,7 @@
 #define NOCLOCK_FLAG "ux0:data/galaxyvita/noclock.txt"
 /* Turns the idle fold off, so its A/B is one binary and one boot apart. */
 #define NOSKIP_FLAG "ux0:data/galaxyvita/noskip.txt"
+#define NOFINISH_FLAG "ux0:data/galaxyvita/nofinish.txt"
 /* Where the sampling profiler leaves its guest-PC histogram. */
 #define PROF_PC_PATH "ux0:data/galaxyvita/prof-pc.txt"
 /* Buttons to hold down without anyone holding them. The boot is gated by
@@ -951,6 +952,19 @@ static int run_aot(SceSize args, void *argp) {
       log_line(buf);
     }
     gx_gxm_set_frag_mode(read_fragdbg());
+    {
+      /* A measurement knob: with the end-of-frame GPU wait gone the frames are
+       * not to be trusted, because the next frame's vertices go into an arena
+       * the GPU may still be reading. What it measures is honest -- the
+       * emulator does identical work either way -- and the question is whether
+       * the frame rate is waiting on the GPU. */
+      SceIoStat fst;
+      if (sceIoGetstat(NOFINISH_FLAG, &fst) >= 0) {
+        gx_gxm_set_no_finish(1u);
+        log_line("end-of-frame GPU wait skipped by " NOFINISH_FLAG
+                 " -- frames are not trustworthy in this run");
+      }
+    }
     if (!gx_gxm_init(gx_cp_regs(ch.gx))) {
       snprintf(buf, sizeof(buf), "gx backend failed: %s", gx_gxm_error());
       log_line(buf);

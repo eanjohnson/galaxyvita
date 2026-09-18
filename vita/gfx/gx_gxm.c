@@ -221,6 +221,7 @@ typedef struct {
   unsigned textured_draws;
   unsigned sampler_index;
   unsigned frag_mode;
+  unsigned no_finish;
   /* The bind's own return code, and what was bound. sceGxmSetFragmentTexture
    * reports failure and the call site threw it away, so a rejected texture
    * left the unit unbound -- which samples white, which is the symptom. */
@@ -293,8 +294,10 @@ static char g_error[256];
 /* Outside `g`, because gx_gxm_init() memsets it and the mode has to survive
  * being chosen before the backend comes up. */
 static unsigned g_frag_mode;
+static unsigned g_no_finish;
 
 void gx_gxm_set_frag_mode(unsigned mode) { g_frag_mode = mode; }
+void gx_gxm_set_no_finish(unsigned on) { g_no_finish = on; }
 
 /* How a decoded image is turned into an SceGxmTexture. Every stage of the
  * texture path has been measured correct on the console and tex2D still
@@ -870,6 +873,7 @@ int gx_gxm_init(const GxRegs *regs) {
   g.regs = regs;
   g.tex_arena_uid = -1;
   g.frag_mode = g_frag_mode;
+  g.no_finish = g_no_finish;
   g.tex_init_mode = g_tex_init_mode;
   g.copy_w = EFB_W;
   g.copy_h = 448;
@@ -1313,10 +1317,18 @@ static void present(void) {
     return;
   gxm_end_scene();
   /* Stage 1 runs the whole pipeline on the emulated CPU's thread and waits for
-   * the GPU before reusing an arena. Emulation is far slower than the display
-   * here, so the wait costs nothing measurable and it removes a whole class of
-   * "the GPU was still reading that" bug from the bring-up. */
-  gxm_finish();
+   * the GPU before reusing an arena. Emulation was far slower than the display
+   * when that was written, so the wait cost nothing measurable and it removed
+   * a whole class of "the GPU was still reading that" bug from the bring-up.
+   *
+   * That is no longer obviously true: removing per-draw state calls moved 4.4s
+   * out of submission and put 4.3s straight back into this wait. The knob is
+   * how that is measured -- it does not make skipping the wait safe, because
+   * the next frame's vertices then land in an arena the GPU may still be
+   * reading. A dump or a snap needs the frame finished whatever the knob says.
+   */
+  if (!g.no_finish || g.dump_dir[0])
+    gxm_finish();
   g.in_scene = 0;
   dump_frame();
   g.frames++;
