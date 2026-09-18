@@ -329,6 +329,7 @@ static volatile u32 g_script_n[2];
 static volatile u32 g_script_slot;
 static volatile u32 g_script_gen;    /* bumped when a new script is published */
 static volatile s32 g_script_ir[2];  /* pointer park, negative to leave alone */
+static volatile s32 g_last_ir[2];    /* as finally handed to bt.c */
 static u32 g_script_serial;          /* last serial applied */
 static u32 g_script_gen_seen;        /* the player's copy of the generation */
 static u32 g_script_start;           /* retrace the current script began at */
@@ -505,6 +506,11 @@ static void vita_pad(BtInput *in, u32 frame, void *user) {
    * camera-space, so the two agree only at the centre. */
   if (in->ir_x >= 0)
     in->ir_x = (s16)(1023 - in->ir_x);
+  /* What actually left this function, for the watchdog line. Deduced pointer
+   * behaviour from cursor positions twice and got it wrong twice; read the
+   * value instead. */
+  g_last_ir[0] = in->ir_x;
+  g_last_ir[1] = in->ir_y;
 }
 
 static void *vita_rw(const char *name, unsigned size, SceUID *uid) {
@@ -669,6 +675,11 @@ static int watchdog(SceSize args, void *argp) {
                     ch->ios.stuck_pumps, ch->ios.stuck_worst,
                     ch->ios.stuck_cmd, ch->ios.stuck_fd,
                     (int)ch->ios.stuck_ret);
+      if (in > 0)
+        in += snprintf(ibuf + in, sizeof(ibuf) - (size_t)in - 2u,
+                       "ir script=%d,%d sent=%d,%d\n",
+                       (int)g_script_ir[0], (int)g_script_ir[1],
+                       (int)g_last_ir[0], (int)g_last_ir[1]);
       if (in > 0)
         in += snprintf(ibuf + in, sizeof(ibuf) - (size_t)in - 2u,
                        "disc reads=%u miss=%u mb=%u off=0x%llx len=%u\n",
