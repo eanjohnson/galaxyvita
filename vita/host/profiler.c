@@ -105,7 +105,7 @@ int gvprof_on(void) { return g_on; }
 
 void gvprof_report(char *out, unsigned n) {
   static const char *k_name[CHASSIS_PH_COUNT] = {"guest", "idle", "disp",
-                                                 "gx",    "ios",  "mmio"};
+                                                 "gx",    "ios",  "mmio", "disc"};
   SceUInt64 now = g_run ? (SceUInt64)sceKernelGetProcessTimeWide() : g_t1;
   u32 s = g_samples;
   u32 ms = g_t0 ? (u32)((now - g_t0) / 1000u) : 0u;
@@ -116,14 +116,16 @@ void gvprof_report(char *out, unsigned n) {
   }
   k = snprintf(out, n, "prof samples=%u over=%ums rate=%u/s ovf=%u", s, ms,
                ms ? (s * 1000u) / ms : 0u, g_overflow);
-  for (u32 i = 0; i < CHASSIS_PH_COUNT && k > 0 && (unsigned)k < n; i++) {
-    /* Tenths of a percent of samples taken. Integer maths on purpose: this
-     * runs on the watchdog's thread beside card I/O and there is no reason
-     * for it to pull in a float formatter. */
-    u32 t = s ? (g_phase[i] * 1000u) / s : 0u;
-    k += snprintf(out + k, n - (unsigned)k, " %s=%u.%u%%", k_name[i], t / 10u,
-                  t % 10u);
-  }
+  /* Raw cumulative counts, not percentages.
+   *
+   * Percentages here can only ever be "since boot", and this run is several
+   * phases long: a cumulative figure kept reporting the load burst long after
+   * the disc had gone quiet, and the steady state -- the thing worth
+   * optimising -- was buried under it. Counts difference exactly between any
+   * two ticks; percentages rounded to a tenth do not. Whoever reads the log
+   * picks the window. */
+  for (u32 i = 0; i < CHASSIS_PH_COUNT && k > 0 && (unsigned)k < n; i++)
+    k += snprintf(out + k, n - (unsigned)k, " %s=%u", k_name[i], g_phase[i]);
 }
 
 void gvprof_dump_pcs(const char *path, unsigned top) {

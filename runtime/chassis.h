@@ -33,6 +33,7 @@ enum {
   CHASSIS_PH_GX,         /* FIFO decode and the GXM sink under it */
   CHASSIS_PH_IOS,        /* IOS/Bluetooth service, flipper, interrupts */
   CHASSIS_PH_MMIO,       /* other emulated MMIO */
+  CHASSIS_PH_DISC,       /* blocked on the memory card, inside an IOS read */
   CHASSIS_PH_COUNT
 };
 

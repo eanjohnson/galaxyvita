@@ -365,9 +365,23 @@ static u64 disc_now_us(void) {
   return (u64)ts.tv_sec * 1000000u + (u64)(ts.tv_nsec / 1000);
 }
 
+static volatile u8 *g_phase_slot;
+static u8 g_phase_busy;
+
+void disc_set_phase_slot(volatile u8 *slot, u8 busy_value) {
+  g_phase_slot = slot;
+  g_phase_busy = busy_value;
+}
+
 int disc_read(Disc *d, u64 offset, u32 len, u8 *dst) {
   const u64 t0 = disc_now_us();
-  const int rc = disc_read_inner(d, offset, len, dst);
+  const u8 was = g_phase_slot ? *g_phase_slot : 0u;
+  int rc;
+  if (g_phase_slot)
+    *g_phase_slot = g_phase_busy;
+  rc = disc_read_inner(d, offset, len, dst);
+  if (g_phase_slot)
+    *g_phase_slot = was;
   g_disc_io_us += disc_now_us() - t0;
   g_disc_io_n++;
   return rc;

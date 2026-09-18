@@ -2,6 +2,126 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — The console was profiled, and it was never running at full clock
+
+Two findings, one of which invalidates every performance number this file
+records.
+
+### The clock was never raised
+
+`main.c` logged `clock: PSVshellPlus user-controlled` -- a sentence somebody
+wrote instead of a measurement. `scePower*` appeared nowhere in the source and
+`ScePower_stub` was not even in `target_link_libraries`. Asking the console
+what it was actually running gave:
+
+```
+clock: on entry arm=333 bus=222 gpu=0 xbar=111
+clock: now   arm=444 bus=222 gpu=222 xbar=166
+```
+
+**Every measurement ever taken in this project was taken at 75% CPU clock and
+half GPU clock.** The app now asks for 444/222/222/166 at startup and logs both
+what it asked for and what it was granted, so the number is observed rather
+than assumed. `noclock.txt` opts out, for the A/B.
+
+The general lesson is the one this file keeps relearning: a log line that
+states a fact nobody measured is worse than no log line, because it stops the
+next person looking. `PSVshellPlus user-controlled` read as "handled".
+
+### The first on-device profile
+
+The host profiler cannot port -- no `SIGPROF`, no `setitimer`, no
+`/proc/self/maps`. So the emulation thread publishes instead of being
+interrupted: a `volatile u8 phase` in `Chassis`, one store at each region
+boundary, read at ~850 Hz by a sampler thread pinned to CPU2 alongside the
+watchdog. Guest PCs go into a 4096-slot hash beside it. `prof.txt` turns it on;
+it costs nothing measurable (20M-block host equivalence was identical, 4.607s
+-> 4.555s).
+
+The report emits **raw cumulative counts, not percentages**. That was not a
+style choice: cumulative percentages kept reporting the disc-load burst long
+after the card went quiet, and the only way to read a window out of two ticks
+is to difference counts that subtract exactly.
+
+Windowing a 630 s run at the slow end (t=606->630 s, vi/s=1.0):
+
+| phase | cumulative @630 s | windowed t=606->630 s |
+|---|---|---|
+| gx (FIFO decode + GXM sink) | 20.9% | **33.6%** |
+| guest (recompiled code) | 21.9% | 24.4% |
+| idle (the SDK's wait loop) | 31.1% | 15.8% |
+| disp (chassis per-block work) | 14.9% | 14.9% |
+| ios | 8.8% | 8.8% |
+| mmio | 2.1% | 2.1% |
+
+This overturns the host profile. On the host, recompiled guest code was 75% of
+time after the accessor inlining; on the console it is a quarter, and
+**graphics is the single largest phase.** The share also moves steadily through
+the run -- gx was 8.4% cumulative at t=52 s and 20.9% at t=630 s -- so any
+figure quoted without a window and a phase attached is meaningless here. Report
+windows.
+
+One caveat on the guest-PC half: at 667k samples the hash had overflowed
+170k of them (25%). The phase histogram is a plain array and is unaffected, but
+the PC ranking from a long run is not trustworthy without more slots.
+
+`CHASSIS_PH_DISC` exists because the first version of this had no disc phase
+and `mmio` silently absorbed card I/O -- disc reads reach the chassis through
+an IPC register write, so they were landing in the MMIO bucket and tracking
+`io=13381ms` almost exactly. `disc_set_phase_slot()` hands `disc.c` a pointer
+to the byte so it can set it without learning what a `Chassis` is.
+
+`scripts/resolve-prof.py` turns the raw PC dump into something readable,
+annotating known addresses and disassembling from the `// ADDR:` comments the
+generator already leaves in the chunk C.
+
+### The idle skip and the bound-256 cliff
+
+`0x804AB358` was already named `OS_IDLE_WAIT` and already special-cased, but
+only to log. Resolved, it is three instructions:
+
+```
+804ab354  bl      0x804A80FC
+804ab358  lwz     r0, -8048(r13)   <- the hot PC
+804ab35c  cmpwi   r0, 0
+804ab360  bc    12, 2, 0x804AB358
+```
+
+A spin on the OS run-queue head. Because the timebase is cycle-derived, waiting
+for an emulated retrace means burning real ARM cycles to make emulated time
+pass, which is the classic idle-skip shape.
+
+It was implemented, gated, and **it failed its gate.** Sweeping the bound on
+how many slices may be credited at once, at 20M host blocks:
+
+| bound | fifo writes | retraces | gx cmds | gx/retrace |
+|---|---|---|---|---|
+| off | 936,432 | 444 | 372,682 | 839.4 |
+| 1 | 959,427 | 453 | 381,790 | 843.0 |
+| 8 | 977,330 | 460 | 388,891 | 845.4 |
+| 64 | 982,440 | 463 | 390,915 | 844.3 |
+| 256 | **0** | 3,354 | 503 | — |
+| 1024 | **0** | 3,360 | 503 | — |
+| 4096 | 634 | 381,783 | 272 | — |
+
+At bounds 1-64 work-per-retrace holds within 0.7% and the run gets 2-5% further
+for the same blocks. Somewhere between 64 and 256 the game stops progressing
+**entirely** -- `fifo=0`, no drawing at all, while retraces multiply by 7.5x.
+The obvious theory, that `MSR[EE]` was left clear so interrupts stopped being
+delivered, is wrong: interrupts went *up*, 381,696 with the skip on against
+16,128 with it off.
+
+So the failure mode is not understood, and the change was reverted. The gate
+in the plan said the skip "must fail loudly rather than be tuned until the
+numbers look nice", and picking 64 because 256 breaks is exactly that tuning.
+2-5% does not buy a cliff nobody can explain -- particularly now that the
+profile puts the idle loop at 16% of the slow phase rather than the 19-29% the
+wall-clock `pc=` proxy suggested.
+
+What survives is `advance_time()`, the bookkeeping lifted verbatim out of the
+dispatch loop and proved equivalent at 20M blocks, which is worth keeping for
+readability alone.
+
 ## 2026-09-17 — Profiled for the first time: 2.11x on the host, and the console is still unexplained
 
 Nothing here had ever been profiled. Every performance statement in this

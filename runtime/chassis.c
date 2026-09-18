@@ -1082,6 +1082,7 @@ int chassis_attach_media(Chassis *ch, const char *game_root,
   int ok = 1;
   if (game_root && *game_root) {
     ch->have_disc = disc_open(&ch->disc, game_root);
+    disc_set_phase_slot(&ch->phase, CHASSIS_PH_DISC);
     if (!ch->have_disc) {
       ch_log(ch, "disc_open failed");
       ok = 0;
@@ -1209,6 +1210,54 @@ int chassis_load_dol(Chassis *ch, const char *path) {
   dol_free(&dol);
   ch_logf(ch, "dol mapped pc=0x%08x sp=0x%08x", ch->cpu.pc, ch->cpu.gpr[1], 0);
   return 1;
+}
+
+/* Credit `used` emulated cycles to everything that runs off them.
+ *
+ * Lifted out of the dispatch loop unchanged -- the extraction was proved
+ * equivalent at a fixed block count before anything else touched it -- so that
+ * an idle skip could make emulated time pass without executing anything. The
+ * skip itself did not survive its gate and is not here; this is what is left,
+ * and it is kept because the loop reads better with the bookkeeping named.
+ *
+ * What the skip would have done, and why it is not in the tree, is recorded in
+ * PROGRESS.md under "The idle skip and the bound-256 cliff". The short version:
+ * spinning the guest's three-instruction wait loop is measurably wasteful, a
+ * bounded skip of it gains 2-5%, and at a bound somewhere between 64 and 256
+ * the boot stops progressing entirely for reasons nobody has explained. A gain
+ * that small does not buy a cliff that sharp. */
+static void advance_time(Chassis *ch, s64 used) {
+  ch->phase = CHASSIS_PH_DISPATCH;
+  if (used < 1)
+    used = 1;
+  ch->cycles += (u64)used;
+  /* The timebase and the decrementer tick at a twelfth of the core clock
+   * (the 243 MHz bus divided by four), not once per dispatch cycle. */
+  ch->tb_frac += (u32)used;
+  u32 ticks = ch->tb_frac / CPU_CYCLES_PER_TB;
+  ch->tb_frac -= ticks * CPU_CYCLES_PER_TB;
+  ch->cpu.timebase += ticks;
+  if (ch->dec <= ticks) {
+    ch->dec -= ticks;
+    ch->dec_irq = 1;
+    ch->dec_asserts++;
+  } else
+    ch->dec -= ticks;
+  /* The remote reports at 200 Hz whether or not the game asks, and its
+   * packets only reach the guest through a USB read it left parked, so both
+   * the clock and the delivery run off emulated time. */
+  ch->bt_frac += (u32)used;
+  if (ch->bt_frac >= CPU_CYCLES_PER_WIIMOTE_SAMPLE) {
+    ch->bt_frac -= CPU_CYCLES_PER_WIIMOTE_SAMPLE;
+    if (ch->input_fn)
+      ch->input_fn(&ch->ios.bt.input, ch->flipper.retrace, ch->input_user);
+    bt_tick(&ch->ios.bt);
+  }
+  ch->phase = CHASSIS_PH_IOS;
+  ios_bt_service(&ch->ios, &ch->flipper, &ch->cpu);
+  flipper_advance(&ch->flipper, (u64)used);
+  maybe_irq(ch);
+  ch->phase = CHASSIS_PH_DISPATCH;
 }
 
 int chassis_run(Chassis *ch, u32 max_blocks) {
@@ -1376,40 +1425,7 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
       }
     }
 
-    {
-      s64 used = (s64)SLICE_CYCLES - ch->cpu.downcount;
-      ch->phase = CHASSIS_PH_DISPATCH;
-      if (used < 1)
-        used = 1;
-      ch->cycles += (u64)used;
-      /* The timebase and the decrementer tick at a twelfth of the core clock
-       * (the 243 MHz bus divided by four), not once per dispatch cycle. */
-      ch->tb_frac += (u32)used;
-      u32 ticks = ch->tb_frac / CPU_CYCLES_PER_TB;
-      ch->tb_frac -= ticks * CPU_CYCLES_PER_TB;
-      ch->cpu.timebase += ticks;
-      if (ch->dec <= ticks) {
-        ch->dec -= ticks;
-        ch->dec_irq = 1;
-        ch->dec_asserts++;
-      } else
-        ch->dec -= ticks;
-      /* The remote reports at 200 Hz whether or not the game asks, and its
-       * packets only reach the guest through a USB read it left parked, so
-       * both the clock and the delivery run off emulated time. */
-      ch->bt_frac += (u32)used;
-      if (ch->bt_frac >= CPU_CYCLES_PER_WIIMOTE_SAMPLE) {
-        ch->bt_frac -= CPU_CYCLES_PER_WIIMOTE_SAMPLE;
-        if (ch->input_fn)
-          ch->input_fn(&ch->ios.bt.input, ch->flipper.retrace, ch->input_user);
-        bt_tick(&ch->ios.bt);
-      }
-      ch->phase = CHASSIS_PH_IOS;
-      ios_bt_service(&ch->ios, &ch->flipper, &ch->cpu);
-      flipper_advance(&ch->flipper, (u64)used);
-      maybe_irq(ch);
-      ch->phase = CHASSIS_PH_DISPATCH;
-    }
+    advance_time(ch, (s64)SLICE_CYCLES - ch->cpu.downcount);
 
     if (ch->cpu.exception == PPC_EXC_FP_UNAVAILABLE) {
       if (ch->dispatch_hits < 16u || (ch->dispatch_hits & 0x3FFu) == 0u)

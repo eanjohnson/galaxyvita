@@ -142,6 +142,25 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   contents. Upload before the first use, and where there is a choice, pick the
   encoding whose all-zero value is the harmless one.
 
+- **The host profile does not describe the console, and a cumulative
+  percentage does not describe a phase.** On the host, recompiled guest code is
+  75% of time; on the device it is a quarter, and the largest single phase at
+  the slow end of a run is graphics. The device profiler therefore reports raw
+  cumulative counts, not percentages, so that differencing two watchdog ticks
+  gives an exact window -- cumulative percentages went on reporting the
+  disc-load burst for minutes after the card went quiet, which reads as a
+  steady state and is a decaying average. Quote a phase share only with the
+  window and the phase it was taken in; the gx share moved from 8% to 21%
+  across one 630 s run. Note also that the guest-PC hash overflows on long runs
+  (25% of samples dropped by 667k), so the PC ranking needs more slots before a
+  long-run ranking means anything; the phase histogram is a plain array and is
+  fine.
+- **A log line asserting something nobody measured is worse than no log line.**
+  `main.c` printed `clock: PSVshellPlus user-controlled` for weeks. Nothing set
+  a clock, `ScePower_stub` was not even linked, and the console was running at
+  333 MHz ARM with the GPU at 0/111 -- so every performance number in the
+  project's history was taken at 75% CPU clock. The line read as "handled" and
+  stopped anyone looking. Log what was asked for *and* what was granted.
 - **A census only covers as far as its run got.** `scripts/check-staging.sh`
   compares the staged subset against the full extraction and will say "ok"
   while the census is still missing every file the game has not asked for

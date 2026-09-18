@@ -81,6 +81,15 @@ int disc_read(Disc *d, u64 offset, u32 len, u8 *dst);
 int disc_read_raw(Disc *d, u64 offset, u32 len, u8 *dst);
 void disc_close(Disc *d);
 
+/* Let a sampling profiler see when this thread is blocked on the card.
+ *
+ * A disc read reaches here from deep inside the IOS IPC handler, so a sampler
+ * that only knows about MMIO attributes the wait to MMIO -- which is how the
+ * load burst came back looking like emulated-register cost. disc.c has no
+ * Chassis and must keep having none, so the chassis hands it the byte to
+ * write and the value to write there, and nothing else crosses. */
+void disc_set_phase_slot(volatile u8 *slot, u8 busy_value);
+
 extern u64 g_disc_io_us;
 extern u32 g_disc_io_n;
 
