@@ -79,8 +79,12 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   and the input reaches neither SceShell nor the application (verified: an app
   read `buttons=0x00000000` with cross held across its whole life). The
   LiveArea cannot be driven from the host, and since `vita_pad` reads through
-  the same `sceCtrlPeekBufferPositive`, synthetic input can never drive the
-  game either.
+  the same `sceCtrlPeekBufferPositive`, no synthetic *button* ever reaches the
+  game that way. The game is driven instead by data it reads for itself:
+  `scripts/send-input-vita.sh` writes a script of (mask, frames) steps to
+  `input.txt`, the watchdog thread polls it every two seconds, and
+  `scripts/snap-vita.sh` pulls the resulting frame back as a PNG. The
+  LiveArea still cannot be driven, so the app is still started with `launch`.
 - **The write-gather pipe is not the GP.** Writes to `0xCC008000` land at the
   PI FIFO write pointer, and `PI_FIFO_BASE` says where that is.
   `GXBeginDisplayList` points it at a buffer in memory. Feeding every WGP write
