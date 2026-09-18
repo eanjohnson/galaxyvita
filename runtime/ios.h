@@ -110,6 +110,18 @@ typedef struct Ios {
   IosLogFn log;
   void *log_user;
   u32 log_left;
+  /* The reply nobody collected.
+   *
+   * IPC is a level, so a reply the guest never takes re-raises the interrupt
+   * for as long as it sits there -- which is what the hardware does, and which
+   * turns one stuck reply into a livelock that starves every other thread.
+   * Counting the consecutive pumps that found it still there says how stuck it
+   * is, and the head reply's own fields say what it was. */
+  u32 stuck_pumps;
+  u32 stuck_worst;
+  u32 stuck_ppcmsg, stuck_cmd, stuck_fd;
+  s32 stuck_ret;
+  u32 stuck_log_left;
 } Ios;
 
 void ios_init(Ios *ios, IosLogFn log, void *log_user);

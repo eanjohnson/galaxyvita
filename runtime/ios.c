@@ -814,6 +814,9 @@ void ios_init(Ios *ios, IosLogFn log, void *log_user) {
   ios->log_left = 400;
   ios->di_log_left = 48;
   ios->bt_log_left = 64;
+  /* Enough to see a stuck reply come and go a few times, not enough for a
+   * livelock to fill the log with the same line. */
+  ios->stuck_log_left = 16;
   /* Off unless a host asks: the HCI and ACL traffic dump is a debugging tool,
    * not something every run should carry. */
   ios->bt_cmd_log_left = 0;
@@ -842,15 +845,52 @@ static void queue_reply(Ios *ios, u32 ppcmsg, u32 cmd, s32 ret) {
   ios->rq_tail++;
 }
 
+/* How many consecutive pumps finding the same uncollected reply count as
+ * "the guest is not coming for it", and how often to re-assert after that.
+ * The first few hundred are the case the level model exists for -- a reply
+ * posted while the guest is inside its own handler -- and re-asserting on
+ * every pump forever is the case that starves the machine. */
+enum { IOS_STUCK_LOG_AT = 256u, IOS_STUCK_THROTTLE = 4096u };
+
 void ios_pump(Ios *ios, Flipper *f, CPUState *cpu) {
-  if (ios->rq_head == ios->rq_tail)
-    return;
-  if (f->ipc_ctrl & 4u) {
-    /* The guest has not collected the last reply. Re-assert the line in case
-     * its handler cleared the flag after acknowledging Y1. */
-    ipc_update_irq(f);
+  if (ios->rq_head == ios->rq_tail) {
+    ios->stuck_pumps = 0;
     return;
   }
+  if (f->ipc_ctrl & 4u) {
+    /* The guest has not collected the last reply. Re-assert the line in case
+     * its handler cleared the flag after acknowledging Y1 -- but not on every
+     * pump once it is clear nothing is coming for it. Re-asserting a level the
+     * guest keeps acknowledging and never clearing is faithful to the
+     * hardware and also a livelock: the CPU spends its whole budget
+     * re-entering the IPC handler and never runs a game thread again, which
+     * from outside looks like a hang with a busy CPU and a frozen GX FIFO. */
+    const IosReply *head = &ios->replyq[ios->rq_head % IOS_REPLY_MAX];
+    ios->stuck_ppcmsg = head->ppcmsg;
+    ios->stuck_cmd = head->cmd;
+    ios->stuck_ret = head->ret;
+    /* The request buffer still holds the fd: it is only overwritten when the
+     * reply is actually handed over, below. */
+    ios->stuck_fd = mem_read32(cpu, to_ea(head->ppcmsg) + 8u);
+    ios->stuck_pumps++;
+    if (ios->stuck_pumps > ios->stuck_worst)
+      ios->stuck_worst = ios->stuck_pumps;
+    if (ios->stuck_pumps == IOS_STUCK_LOG_AT && ios->stuck_log_left &&
+        ios->log) {
+      char buf[160];
+      ios->stuck_log_left--;
+      snprintf(buf, sizeof(buf),
+               "ios reply stuck: ppcmsg=0x%08x cmd=%u fd=%u ret=%d queued=%u",
+               ios->stuck_ppcmsg, ios->stuck_cmd, ios->stuck_fd,
+               (int)ios->stuck_ret, ios->rq_tail - ios->rq_head);
+      ios->log(buf, ios->log_user);
+    }
+    if (ios->stuck_pumps < IOS_STUCK_THROTTLE ||
+        (ios->stuck_pumps % IOS_STUCK_THROTTLE) == 0u)
+      ipc_update_irq(f);
+    return;
+  }
+  ios->stuck_pumps = 0;
   IosReply *r = &ios->replyq[ios->rq_head % IOS_REPLY_MAX];
   ios->rq_head++;
   u32 ea = to_ea(r->ppcmsg);

@@ -645,11 +645,15 @@ static int watchdog(SceSize args, void *argp) {
       int in;
       in = snprintf(ibuf, sizeof(ibuf) - 2u,
                     "irq ai=%u dsp=%u vi=%u petok=%u pefin=%u ipc=%u "
-                    "cause=0x%08x mask=0x%08x\n",
+                    "cause=0x%08x mask=0x%08x stuck=%u/%u cmd=%u fd=%u "
+                    "ret=%d\n",
                     ch->flipper.irq_count[0], ch->flipper.irq_count[1],
                     ch->flipper.irq_count[2], ch->flipper.irq_count[3],
                     ch->flipper.irq_count[4], ch->flipper.irq_count[5],
-                    ch->flipper.pi_cause, ch->flipper.pi_mask);
+                    ch->flipper.pi_cause, ch->flipper.pi_mask,
+                    ch->ios.stuck_pumps, ch->ios.stuck_worst,
+                    ch->ios.stuck_cmd, ch->ios.stuck_fd,
+                    (int)ch->ios.stuck_ret);
       if (in > 0)
         sceIoWrite(fd, ibuf, (SceSize)in);
     }
