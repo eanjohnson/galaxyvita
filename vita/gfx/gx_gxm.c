@@ -267,6 +267,7 @@ typedef struct {
 
   char dump_dir[128];
   unsigned dump_count, dump_stride, dumped;
+  unsigned snap_done, snaps;
   unsigned char *dump_buf;
 } GxGxm;
 
@@ -1196,9 +1197,46 @@ static void on_prim_end(void *user) {
   g.verts += g.prim_count;
 }
 
+/* Outside `g`, for the same reason the fragment mode is: the request comes
+ * from the watchdog thread, and gx_gxm_init() memsets everything in `g`. */
+static volatile unsigned g_snap_req;
+
+void gx_gxm_snap(unsigned serial) { g_snap_req = serial; }
+
+/* One frame, on demand, to a fixed name.
+ *
+ * The dump window is fixed when the backend comes up, which is the wrong
+ * shape for driving the game: a run that has just been sent a button press
+ * needs the frame after the press, and which frame that is cannot be known in
+ * advance. A serial written to the card from the host asks for the next one. */
+static void snap_frame(void) {
+  char path[192];
+  SceUID fd;
+  const unsigned want = g_snap_req;
+  if (want == g.snap_done || !g.dump_dir[0])
+    return;
+  g.snap_done = want;
+  if (!g.dump_buf) {
+    g.dump_buf =
+        (unsigned char *)malloc((size_t)gxm_width() * gxm_height() * 4u);
+    if (!g.dump_buf)
+      return;
+  }
+  if (!gxm_capture(g.dump_buf))
+    return;
+  snprintf(path, sizeof(path), "%s/snap.raw", g.dump_dir);
+  fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+  if (fd < 0)
+    return;
+  sceIoWrite(fd, g.dump_buf, (SceSize)(gxm_width() * gxm_height() * 4u));
+  sceIoClose(fd);
+  g.snaps++;
+}
+
 static void dump_frame(void) {
   char path[192];
   SceUID fd;
+  snap_frame();
   if (!g.dump_dir[0] || g.dumped >= g.dump_count)
     return;
   if (g.dump_stride && (g.frames % g.dump_stride) != 0u)
@@ -1304,13 +1342,14 @@ void gx_gxm_report(char *out, unsigned n) {
   snprintf(out, n,
            "gxm frames=%u scenes=%u draws=%u vtx=%u drop_full=%u "
            "drop_nomtx=%u drop_novp=%u drop_prim=%u scale=%.3f copy=%ux%u "
-           "dumped=%u tex=%u/%u arena=%uk miss_unmap=%u miss_fmt=%u "
+           "dumped=%u snaps=%u tex=%u/%u arena=%uk miss_unmap=%u miss_fmt=%u "
            "miss_space=%u smp=%u fdbg=%u last=%dx%d fin=%dx%d dtiny=%u "
            "dbig=%u duntex=%u bm=%08x zm=%08x am=%08x fvar=%u frc=0x%08x "
            "dblend=%u dnocol=%u datest=%u uv=[%.3f %.3f]-[%.3f %.3f]",
            g.frames, g.scenes, g.draws, g.verts, g.dropped_full,
            g.dropped_nomatrix, g.dropped_novp, g.dropped_unsupported,
-           (double)g.scale, g.copy_w, g.copy_h, g.dumped, g.textured_draws,
+           (double)g.scale, g.copy_w, g.copy_h, g.dumped, g.snaps,
+           g.textured_draws,
            g.tex_decoded, g.tex_arena_used / 1024u, g.tex_unmapped,
            g.tex_unsupported, g.tex_nospace, g.sampler_index,
            g.frag_mode, g.last_tex_w, g.last_tex_h, g.final_tex_w,

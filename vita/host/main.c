@@ -54,6 +54,8 @@
  * one, which is why the duty cycle is there. Empty or absent means the pad
  * alone drives the game, as it should when someone is actually playing. */
 #define BTN_FLAG "ux0:data/galaxyvita/btn.txt"
+#define INPUT_FLAG "ux0:data/galaxyvita/input.txt"
+#define SNAP_FLAG "ux0:data/galaxyvita/snap.txt"
 /* Blocks, not frames. 60M stopped inside the boot: on the host the title screen
  * is around 90M and the file select around 120M, and the console runs the same
  * blocks in the same order. Overshooting costs nothing -- the run ends when the
@@ -256,12 +258,14 @@ static s16 pointer_axis(unsigned char v, int centre, int half) {
   return (s16)out;
 }
 
-/* Parsed once from BTN_FLAG; see the comment there. */
+/* Re-read from BTN_FLAG while the game runs; see the comment there. */
 static u16 g_btn_mask;
 static u32 g_btn_period = 90u;
 static u32 g_btn_hold = 30u;
 
 static void read_btn_flag(void) {
+  const u16 was_mask = g_btn_mask;
+  const u32 was_period = g_btn_period, was_hold = g_btn_hold;
   SceUID fd = sceIoOpen(BTN_FLAG, SCE_O_RDONLY, 0);
   if (fd < 0)
     return;
@@ -282,12 +286,146 @@ static void read_btn_flag(void) {
     g_btn_hold = hold;
   if (g_btn_hold > g_btn_period)
     g_btn_hold = g_btn_period;
-  {
+  /* Logged only when it changes. This is polled every two seconds now, and a
+   * line a tick would bury the boot log it shares. */
+  if (g_btn_mask != was_mask || g_btn_period != was_period ||
+      g_btn_hold != was_hold) {
     char line[96];
     snprintf(line, sizeof(line), "btn flag: mask=0x%04x period=%u hold=%u",
              (unsigned)g_btn_mask, (unsigned)g_btn_period, (unsigned)g_btn_hold);
     log_line(line);
   }
+}
+
+/* A scripted remote, re-read from the card while the game runs.
+ *
+ * btn.txt presses one mask forever on a duty cycle, which is enough to get
+ * past a screen that only wants any button and no use at all for anything
+ * that needs a particular sequence. This is the other half: input.txt holds a
+ * list of (mask, frames) steps played once, in order, and the file is polled
+ * by the watchdog thread rather than parsed at startup -- so a run already in
+ * progress can be driven from the host without restarting it. Nothing on this
+ * console can deliver synthetic input any other way: vitacompanion's `press`
+ * reaches neither SceShell nor the application, and vita_pad reads the same
+ * sceCtrlPeekBufferPositive that it fails to reach.
+ *
+ * The first token is a serial. The script is (re)started whenever it changes,
+ * which is what lets the same press be sent twice -- comparing the steps
+ * themselves would swallow the second one. */
+enum { INPUT_STEPS = 64 };
+
+typedef struct {
+  u16 mask; /* Wii Remote buttons, BT_BTN_* */
+  u8 nun;   /* nunchuk buttons, BT_NUN_* */
+  u32 frames;
+} InputStep;
+
+/* Two buffers: the watchdog thread fills the spare one and then publishes it
+ * by bumping the generation, so a half-parsed script is never the one being
+ * played. The players's worst case is reading one step from the wrong buffer
+ * for a single 200 Hz sample, which is a frame of input, not a wedge. */
+static InputStep g_script[2][INPUT_STEPS];
+static volatile u32 g_script_n[2];
+static volatile u32 g_script_slot;
+static volatile u32 g_script_gen;    /* bumped when a new script is published */
+static volatile s32 g_script_ir[2];  /* pointer park, negative to leave alone */
+static u32 g_script_serial;          /* last serial applied */
+static u32 g_script_gen_seen;        /* the player's copy of the generation */
+static u32 g_script_start;           /* retrace the current script began at */
+
+static void read_input_flag(void) {
+  SceUID fd = sceIoOpen(INPUT_FLAG, SCE_O_RDONLY, 0);
+  char buf[512];
+  int n;
+  unsigned serial = 0;
+  int ir_x = -1, ir_y = -1;
+  const char *p;
+  char *end;
+  unsigned slot, count = 0;
+
+  if (fd < 0)
+    return;
+  n = sceIoRead(fd, buf, sizeof(buf) - 1);
+  sceIoClose(fd);
+  if (n <= 0)
+    return;
+  buf[n] = 0;
+  p = buf;
+  serial = (unsigned)strtoul(p, &end, 10);
+  if (end == p)
+    return;
+  p = end;
+  /* The pointer park, in the IR camera's own 1024x768 units, and negative to
+   * leave the pad's own pointer alone. Always present, never optional: when
+   * it was optional it was read as "the next two numbers in the file", which
+   * is the first step, and the whole script parsed as empty. A header that is
+   * always three numbers cannot do that. */
+  {
+    const char *q = p;
+    long x = strtol(q, &end, 10);
+    if (end == q)
+      return;
+    q = end;
+    ir_y = (int)strtol(q, &end, 10);
+    if (end == q)
+      return;
+    ir_x = (int)x;
+    p = end;
+  }
+  if (serial == g_script_serial)
+    return;
+
+  slot = g_script_slot ? 0u : 1u;
+  for (;;) {
+    unsigned long mask, frames;
+    const char *q = p;
+    mask = strtoul(q, &end, 16);
+    if (end == q)
+      break;
+    q = end;
+    frames = strtoul(q, &end, 10);
+    if (end == q)
+      break;
+    p = end;
+    if (count >= INPUT_STEPS || frames == 0ul)
+      break;
+    /* The nunchuk rides in bits 16 and up of the same field, so a step is
+     * always exactly two numbers and the parse cannot go out of step. */
+    g_script[slot][count].mask = (u16)(mask & 0xFFFFul);
+    g_script[slot][count].nun = (u8)((mask >> 16) & 0xFFul);
+    g_script[slot][count].frames = (u32)frames;
+    count++;
+  }
+  g_script_n[slot] = count;
+  g_script_ir[0] = ir_x;
+  g_script_ir[1] = ir_y;
+  g_script_slot = slot;
+  g_script_serial = serial;
+  g_script_gen++;
+  {
+    char line[96];
+    snprintf(line, sizeof(line), "input script: serial=%u steps=%u ir=%d,%d",
+             serial, count, ir_x, ir_y);
+    log_line(line);
+  }
+}
+
+/* A frame on demand, so that a press can be seen to have done something. The
+ * serial is passed straight through; the renderer takes one frame per change
+ * and ignores a repeat. */
+static void read_snap_flag(void) {
+  SceUID fd = sceIoOpen(SNAP_FLAG, SCE_O_RDONLY, 0);
+  char buf[32];
+  int n;
+  if (fd < 0)
+    return;
+  n = sceIoRead(fd, buf, sizeof(buf) - 1);
+  sceIoClose(fd);
+  if (n <= 0)
+    return;
+  buf[n] = 0;
+  if (g_gfx_ready)
+    gx_gxm_snap((unsigned)strtoul(buf, NULL, 10));
 }
 
 static void vita_pad(BtInput *in, u32 frame, void *user) {
@@ -316,8 +454,30 @@ static void vita_pad(BtInput *in, u32 frame, void *user) {
    * run can be taken over by hand without rebooting it. */
   if (g_btn_mask && (frame % g_btn_period) < g_btn_hold)
     b |= g_btn_mask;
+  u8 nun = 0;
+  {
+    const u32 gen = g_script_gen;
+    if (gen != g_script_gen_seen) {
+      g_script_gen_seen = gen;
+      g_script_start = frame;
+    }
+    {
+      const u32 slot = g_script_slot;
+      const u32 steps = g_script_n[slot];
+      u32 t = frame - g_script_start;
+      u32 i;
+      for (i = 0; i < steps; i++) {
+        if (t < g_script[slot][i].frames) {
+          b |= g_script[slot][i].mask;
+          nun |= g_script[slot][i].nun;
+          break;
+        }
+        t -= g_script[slot][i].frames;
+      }
+    }
+  }
   in->buttons = b;
-  in->nunchuk = 0;
+  in->nunchuk = nun;
   if (pad.buttons & SCE_CTRL_LTRIGGER)
     in->nunchuk |= BT_NUN_Z;
   if (pad.buttons & SCE_CTRL_TRIANGLE)
@@ -326,6 +486,10 @@ static void vita_pad(BtInput *in, u32 frame, void *user) {
   in->stick_y = stick_axis(pad.ly, 1);
   in->ir_x = pointer_axis(pad.rx, 512, 512);
   in->ir_y = pointer_axis(pad.ry, 384, 384);
+  if (g_script_ir[0] >= 0) {
+    in->ir_x = (s16)g_script_ir[0];
+    in->ir_y = (s16)g_script_ir[1];
+  }
 }
 
 static void *vita_rw(const char *name, unsigned size, SceUID *uid) {
@@ -472,6 +636,12 @@ static int watchdog(SceSize args, void *argp) {
      * the cache and never reach the card, which reads from the host exactly
      * like a thread that stopped running. The whole point of this thread is to
      * be believed about that distinction, so pay for the sync. */
+    /* The remote, polled rather than parsed at startup. This thread is
+     * already the one doing card I/O on a timer, and two small reads a tick
+     * are nothing beside the log it just wrote. */
+    read_btn_flag();
+    read_input_flag();
+    read_snap_flag();
     sceIoSyncByFd(fd, 0);
     /* Never exit. The previous version returned when a reopen failed, which
      * made the one thread whose job is to say what happened the first thread

@@ -57,6 +57,11 @@ void gx_gxm_set_tex_init_mode(unsigned mode);
  * Wait for the GPU first. For the selftest; the game never needs it. */
 void gx_gxm_flush_textures(void);
 
+/* Ask for the next presented frame to be written to <dump dir>/snap.raw. Any
+ * serial different from the last one asks for one frame; repeating a serial
+ * asks for nothing. Safe to call from another thread. */
+void gx_gxm_snap(unsigned serial);
+
 const char *gx_gxm_error(void);
 
 /* One line for the boot log: frames presented, draws, vertices, and what was
