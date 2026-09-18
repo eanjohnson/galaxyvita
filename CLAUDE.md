@@ -123,6 +123,13 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   sharing the card, ftpvita included. Stride 8 was enough to do it. Keep the
   product of count and frequency low; the useful frames are rarely so close
   together that it matters.
+- **A frame dump at the default stride is all opening flash.** `GV_GFX_EVERY`
+  defaults to 1, so `GV_GFX_FRAMES=40` dumps frames 0 to 39 -- every one of
+  them inside the game's white flash. Forty such frames compared byte-for-byte
+  across a graphics change match perfectly and prove nothing, and that reads
+  exactly like a passing pixel gate. Stride the dump out (`GV_GFX_EVERY=30`
+  reaches frame 1140 in 39 shots) and count distinct colours per frame before
+  believing the comparison: real content here is 186-213, the flash is 1.
 - **"The screen is white" is not evidence until the host frame is checked.**
   The host renders frames 0 to 99 of this boot as solid white -- the game's
   own opening flash -- and the strap screen only appears around frame 100. A

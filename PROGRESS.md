@@ -2,6 +2,46 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — Pooling the decode buffer is 1.06x for three lines
+
+`GxVertexLoader::Decode` was already written for reuse: it `clear()`s both
+vectors and `reserve()`s before filling them, and `clear()` keeps capacity. The
+caller threw that away by naming a fresh `GxDecodedDraw` per draw, so capacity
+was freed at the end of every draw and reallocated at the start of the next --
+roughly 20,000 allocate/free pairs a frame at 9,000-11,600 draws, before a
+vertex is read. Hoisting it to a member is the whole change.
+
+| retraces | phase split | pooled | speedup |
+|---|---|---|---|
+| 400-800 | 3.71 VI/s | 3.75 | 1.011x |
+| 800-1100 | 1.72 | 1.79 | 1.041x |
+| 1100-1400 | 1.40 | **1.48** | **1.057x** |
+
+**The phase it was aimed at is the phase that moved**, which is the check that
+it worked for the reason claimed and not by luck: `gxvtx` 23.1% -> 20.8%,
+12.3% -> 10.3%, 0.7% -> 0.5%. In absolute seconds over the slow window, `guest`
+went 54.6s -> 54.5s and `idle` 42.8s -> 42.8s, both flat; `gxvtx` gave up 7.0s
+of the 10s the window lost. The remaining 3s came off `gx` parse and `ios`,
+which is what less allocator traffic does to everything sharing the heap.
+
+### The gate, and the gate that was nearly wrong
+
+Host equivalence at 1200 retraces is exact, `draws=6315 vtx=25260` included --
+the geometry reaching the sink is unchanged.
+
+Pixel equivalence: 39 frames rendered by the software rasteriser at stride 30
+across the whole boot, with and without the change, identical byte-for-byte.
+36 of them carry real geometry (186-213 distinct colours), spanning frames 90
+to 1140.
+
+**The first attempt at that gate proved nothing and looked like it had passed.**
+`GV_GFX_EVERY` defaults to a stride of 1, so a 40-frame dump is frames 0 to 39
+-- the game's opening flash. Forty frames matched byte-for-byte and every one
+of them was solid white or solid black. This is CLAUDE.md's own white-screen
+trap arriving from a new direction: the frames were checked, and checking them
+was still not evidence, because nothing had been drawn yet. A frame gate needs
+a distinct-colour count next to it or it is not a gate.
+
 ## 2026-09-18 — Vertex loading is 23% of the console, and strict aliasing is worth nothing
 
 ### What was inside `gx`
