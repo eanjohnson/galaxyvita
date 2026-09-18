@@ -27,6 +27,33 @@ INC="$ROOT/third_party/DolRecomp/src"
 JOBS="$(nproc)"
 
 mkdir -p "$CMAKE_SRC"
+
+# The flags the recompiled guest code is built with, spelled out.
+#
+# They used to be emergent rather than chosen. This script passed "-O2" and the
+# vitasdk toolchain's Release configuration appended "-O3 -DNDEBUG" and then
+# target_compile_options put "-O2" back on the end -- and gcc takes the last
+# -O it is given, so the hottest code in the project quietly built at -O2 while
+# the hand-written runtime, through the opposite ordering accident in the top
+# level CMakeLists, built at -O3. Neither was a decision anybody made.
+#
+# GV_AOT_OPT and GV_AOT_ARCH are now the whole story, and the build type is
+# pinned to empty so nothing gets appended behind them. The defaults reproduce
+# exactly what shipped before this was noticed, so changing them is an
+# experiment somebody ran, not a side effect: sweep with
+#
+#   GV_AOT_OPT=-O3 ./scripts/measure-aot-size.sh
+#   GV_AOT_OPT=-Os ./scripts/measure-aot-size.sh
+#   GV_AOT_ARCH="-mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard -marm" ...
+#
+# and note that every chunk function is about 47 KiB against a 32 KiB L1
+# instruction cache, so "more inlining" is not obviously the faster direction.
+# Measure it in VI/s on the device; .text alone does not say.
+AOT_OPT="${GV_AOT_OPT:--O2}"
+AOT_ARCH="${GV_AOT_ARCH:--mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard -mthumb}"
+AOT_EXTRA="${GV_AOT_EXTRA:--fno-strict-aliasing}"
+echo "==> AOT flags: $AOT_OPT $AOT_ARCH $AOT_EXTRA"
+
 # CMake glob at configure time; reconfigure after generate-aot.sh.
 cat > "$CMAKE_SRC/CMakeLists.txt" <<EOF
 cmake_minimum_required(VERSION 3.16)
@@ -39,7 +66,7 @@ if(NOT AOT_SOURCES)
 endif()
 add_library(galaxyvita_aot OBJECT \${AOT_SOURCES})
 target_include_directories(galaxyvita_aot PRIVATE "${INC}" "${SRC_DIR}")
-target_compile_options(galaxyvita_aot PRIVATE -O2 -fno-strict-aliasing)
+target_compile_options(galaxyvita_aot PRIVATE ${AOT_OPT} ${AOT_EXTRA})
 EOF
 
 sum_size() {
@@ -63,11 +90,26 @@ if [[ -z "${VITASDK:-}" || ! -x "$VITASDK/bin/arm-vita-eabi-gcc" ]]; then
   echo "VITASDK missing; skip Vita cross-compile" >&2
 else
   echo "==> vita objects"
+  # Build type deliberately empty: Release would append its own -O3 after
+  # these and win, which is the bug this file used to have.
+  #
+  # The objects are globbed into the final link with no dependency edge back to
+  # the flags they were built with, so a sweep that reused a tree built under
+  # different flags would link a mixture and report it as one measurement.
+  # Stamp the flags and wipe the tree when they move -- and only then, because
+  # a full rebuild here is 1322 objects.
+  STAMP="$VITA_BUILD/.gv-flags"
+  WANT="$AOT_OPT $AOT_ARCH $AOT_EXTRA"
+  if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$WANT" ]]; then
+    [[ -d "$VITA_BUILD" ]] && echo "==> AOT flags changed; rebuilding all objects"
+    rm -rf "$VITA_BUILD"
+  fi
   cmake -S "$CMAKE_SRC" -B "$VITA_BUILD" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_BUILD_TYPE= \
     -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" \
-    -DCMAKE_C_FLAGS="-O2 -fno-strict-aliasing -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard -mthumb"
+    -DCMAKE_C_FLAGS="$AOT_OPT $AOT_ARCH $AOT_EXTRA"
   cmake --build "$VITA_BUILD" -j"$JOBS"
+  printf '%s' "$WANT" > "$STAMP"
   mapfile -t VITA_OBJS < <(find "$VITA_BUILD" \( -name '*.o' -o -name '*.obj' \) \
     ! -name 'CMakeCCompilerABI.*' ! -name 'CMakeCCompilerId.*' | sort)
   read -r VTEXT VDATA VBSS <<<"$(sum_size arm-vita-eabi-size "${VITA_OBJS[@]}")"

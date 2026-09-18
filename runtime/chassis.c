@@ -273,6 +273,15 @@ static u64 ext_read(CPUState *cpu, u32 ea, u8 size) {
   return flipper_read(&ch->flipper, ea, size);
 }
 
+/* The write-gather pipe, at offset 0x8000..0x8FFF of the Flipper window --
+ * both the 0xCC cached view and the 0x0C physical alias, because flipper.c's
+ * classify() takes either and the guest uses both. */
+static int is_wgp(u32 ea) {
+  u32 top = ea >> 24;
+  u32 off = ea & 0x00FFFFFFu;
+  return (top == 0xCCu || top == 0x0Cu) && off >= 0x8000u && off < 0x9000u;
+}
+
 static void ext_write(CPUState *cpu, u32 ea, u64 value, u8 size) {
   Chassis *ch = (Chassis *)cpu->external_user_data;
   u8 *host;
@@ -298,7 +307,16 @@ static void ext_write(CPUState *cpu, u32 ea, u64 value, u8 size) {
     ch_logf(ch, "ppcctrl w val=0x%08x pc=0x%08x hits=%u", (u32)value, cpu->pc,
             ch->dispatch_hits);
   }
-  flipper_write(&ch->flipper, cpu, ch->gx, ea, value, size);
+  /* The GX FIFO window is the write-gather pipe, and everything under it --
+   * command decode, the vertex loader, the GXM sink -- runs on this thread
+   * inside this call. Splitting it out here is what tells a CPU-bound run from
+   * a draw-submission-bound one, which no device measurement has ever done. */
+  {
+    u8 was = ch->phase;
+    ch->phase = is_wgp(ea) ? CHASSIS_PH_GX : CHASSIS_PH_MMIO;
+    flipper_write(&ch->flipper, cpu, ch->gx, ea, value, size);
+    ch->phase = was;
+  }
 }
 
 static u32 ext_read32(CPUState *cpu, u32 ea, u8 rid) {
@@ -383,6 +401,10 @@ static void fallback(CPUState *cpu, u32 raw, u32 cia) {
     u32 v = cpu->gpr[rd];
     int handled = 1;
     cpu->exception = 0;
+    if (xo == 339u)
+      ch->fb_mfspr++;
+    else if (xo == 467u)
+      ch->fb_mtspr++;
     if (extra_spr(ch, spr, &v, xo == 467u)) {
       if (xo != 467u)
         cpu->gpr[rd] = v;
@@ -395,6 +417,7 @@ static void fallback(CPUState *cpu, u32 raw, u32 cia) {
       ppc_mtspr(cpu, spr, v, cia);
       handled = cpu->exception == 0u;
     } else {
+      ch->fb_mftb++;
       v = ppc_mftb(cpu, spr, cia);
       handled = cpu->exception == 0u;
       if (handled)
@@ -412,6 +435,7 @@ static void fallback(CPUState *cpu, u32 raw, u32 cia) {
     return;
   }
 
+  ch->fb_unknown++;
   if (ch->dispatch_hits < 32u)
     ch_logf(ch, "skip unknown raw=0x%08x cia=0x%08x xo=%u", raw, cia, xo);
   cpu->pc = cia + 4u;
@@ -1319,6 +1343,7 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
     hot_note(ch, pc);
     ch->cpu.downcount = SLICE_CYCLES;
     ch->ran_from = pc;
+    ch->phase = pc == OS_IDLE_WAIT ? CHASSIS_PH_IDLE : CHASSIS_PH_GUEST;
     if (!dolrecomp_call(&ch->cpu, pc)) {
       ch->dispatch_misses++;
       ch->uncovered_pc = pc;
@@ -1353,6 +1378,7 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
 
     {
       s64 used = (s64)SLICE_CYCLES - ch->cpu.downcount;
+      ch->phase = CHASSIS_PH_DISPATCH;
       if (used < 1)
         used = 1;
       ch->cycles += (u64)used;
@@ -1378,9 +1404,11 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
           ch->input_fn(&ch->ios.bt.input, ch->flipper.retrace, ch->input_user);
         bt_tick(&ch->ios.bt);
       }
+      ch->phase = CHASSIS_PH_IOS;
       ios_bt_service(&ch->ios, &ch->flipper, &ch->cpu);
       flipper_advance(&ch->flipper, (u64)used);
       maybe_irq(ch);
+      ch->phase = CHASSIS_PH_DISPATCH;
     }
 
     if (ch->cpu.exception == PPC_EXC_FP_UNAVAILABLE) {

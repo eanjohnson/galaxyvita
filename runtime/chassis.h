@@ -26,6 +26,16 @@ typedef void (*ChassisInputFn)(BtInput *in, u32 frame, void *user);
 
 /* Block-entry PC census. Open-addressed, never resized: a boot that stalls
  * shows up as a handful of PCs with almost all the hits. */
+enum {
+  CHASSIS_PH_GUEST = 0,  /* inside recompiled code */
+  CHASSIS_PH_IDLE,       /* recompiled code, but the SDK's idle wait */
+  CHASSIS_PH_DISPATCH,   /* the chassis loop's own per-block work */
+  CHASSIS_PH_GX,         /* FIFO decode and the GXM sink under it */
+  CHASSIS_PH_IOS,        /* IOS/Bluetooth service, flipper, interrupts */
+  CHASSIS_PH_MMIO,       /* other emulated MMIO */
+  CHASSIS_PH_COUNT
+};
+
 #define CHASSIS_HOT_SLOTS 4096u
 
 typedef struct Chassis {
@@ -70,6 +80,14 @@ typedef struct Chassis {
   u32 fifo_ea;
   u32 fifo_pc;
   u32 last_pc;
+  /* Which part of the emulator is running right now, for a sampling profiler
+   * to read from another thread. One byte store at a handful of sites, no
+   * timers on the hot path: the sampler turns a stream of these into a time
+   * breakdown, which is the thing this project has never had on the console.
+   * CHASSIS_PH_IDLE is deliberately split out of GUEST -- it is guest code,
+   * but it is guest code doing nothing, and how much of the run it owns is
+   * the whole case for idle-skip. */
+  volatile u8 phase;
   u32 last_lr;
   u32 last_ctr;
   u32 ran_from;
@@ -81,6 +99,15 @@ typedef struct Chassis {
   u32 dec;
   u32 hid4;
   u32 spr_skips;
+  /* How often the recompiled code hands an instruction back to the chassis
+   * interpreter, by class. Nothing counted this before, and the one time it
+   * mattered -- DCFlushRange falling through per cache line -- it was found by
+   * accident in a hot-PC list. mftb is on the guest's own timing paths, so a
+   * large count here is a real cost and not just a curiosity. */
+  u32 fb_mfspr;
+  u32 fb_mtspr;
+  u32 fb_mftb;
+  u32 fb_unknown;
   u32 dec_writes;
   u32 dec_asserts;
   u32 irq_taken;

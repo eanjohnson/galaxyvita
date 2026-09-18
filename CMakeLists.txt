@@ -73,6 +73,7 @@ endif()
 
 add_executable(galaxyvita
   vita/host/main.c
+  vita/host/profiler.c
   # The sceGxm backend. vitaGL is not used: its runtime GLSL translator cannot
   # compile Dolphin's shaders, so the console's Cg compiler is driven directly
   # and the device below it has to be raw GXM.
@@ -131,6 +132,7 @@ target_link_libraries(galaxyvita
   SceGxm_stub
   SceDisplay_stub
   SceCtrl_stub
+  ScePower_stub
   SceCommonDialog_stub
   SceSysmodule_stub
   SceAppMgr_stub

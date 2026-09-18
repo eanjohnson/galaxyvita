@@ -66,15 +66,18 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   way. `scripts/check-staging.sh` boots the staged subset against the full
   extraction and requires them to be indistinguishable; run it after
   regenerating a census, before staging.
-- **vitacompanion's `launch` kills the app after ~14 seconds.** Started from
-  the LiveArea bubble the same binary runs as long as it likes; started with
-  `launch` it is stopped at ~13.9 s, reliably, whatever it does. This was
-  mistaken for a device-wide application cap and cost most of two days, because
-  the harness was the one component never suspected -- it was the instrument
-  doing the measuring, and a fifty-line control app built to exonerate
-  GalaxyVita died the same way, which looked like proof and was the opposite.
-  Any hardware run shorter than ~14 s is suspect by default. Before concluding
-  anything from a device result, check the app was not simply stopped.
+- **A run launched over vitacompanion dies at ~14 s unless something keeps the
+  console awake.** For two days this read as "`launch` kills the app after
+  ~13.9 s, reliably, whatever it does", and the harness was the one component
+  never suspected -- it was the instrument doing the measuring, and a
+  fifty-line control app built to exonerate GalaxyVita died the same way, which
+  looked like proof and was the opposite. The cap is the OS suspending an app
+  it thinks nobody is using. Holding `nosleep on` over vitacompanion and
+  calling `sceKernelPowerTick` from the display thread defeats it: runs started
+  with plain `launch` now reach **1162 s** unattended, which is how the file
+  select was ever measured. So `launch` is fine and a LiveArea tap is not
+  needed. Any hardware run that stops near 14 s means the wakeup lapsed, not
+  that the app failed -- check that before concluding anything from it.
 - **`press` and `release` do not work.** vitacompanion answers "Input pressed."
   and the input reaches neither SceShell nor the application (verified: an app
   read `buttons=0x00000000` with cross held across its whole life). The

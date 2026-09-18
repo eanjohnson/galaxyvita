@@ -2,6 +2,7 @@
 #include "chassis.h"
 #include "gx_gxm.h"
 #include "gxm.h"
+#include "profiler.h"
 #include "shader_cache.h"
 
 #include <psp2/ctrl.h>
@@ -12,6 +13,7 @@
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/sysmem.h>
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/power.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -40,6 +42,10 @@
  * building a second binary. */
 #define NOGFX_FLAG "ux0:data/galaxyvita/nogfx.txt"
 #define IDLE_FLAG "ux0:data/galaxyvita/idle.txt"
+/* Skip the clock raise, so one binary can be A/B'd across two boots. */
+#define NOCLOCK_FLAG "ux0:data/galaxyvita/noclock.txt"
+/* Where the sampling profiler leaves its guest-PC histogram. */
+#define PROF_PC_PATH "ux0:data/galaxyvita/prof-pc.txt"
 /* Buttons to hold down without anyone holding them. The boot is gated by
  * screens that want a button -- the wrist strap wants A, the title screen wants
  * A and B -- and neither vitacompanion's `press` nor anything else on the host
@@ -572,6 +578,7 @@ static int watchdog(SceSize args, void *argp) {
   (void)args;
   (void)argp;
   u32 last = 0;
+  u32 last_vi = 0;
   u32 ticks = 0;
   int log_stuck = 0;
   /* Opened once and held.
@@ -594,7 +601,7 @@ static int watchdog(SceSize args, void *argp) {
      * thread could ever service a system event. */
     sceKernelDelayThreadCB(2 * 1000 * 1000);
     const Chassis *ch = g_watch;
-    char buf[256];
+    char buf[320];
     int n;
     if (!ch) {
       ticks++;
@@ -627,12 +634,14 @@ static int watchdog(SceSize args, void *argp) {
                  "watchdog t=%us hits=%u (+%u) pc=0x%08x fifo=%u mmio_w=%u "
                  "free=%dk cdram=%dk phy=%dk wr=%d probe=%d lost=%u "
                  "io=%ums/%u "
-                 "pres=%u prc=0x%08x%s%s\n",
+                 "pres=%u prc=0x%08x clk=%d/%d/%d%s%s\n",
                  ticks * 2u, hits, hits - last, ch->last_pc, ch->fifo_writes,
                  ch->mmio_writes, mem.size_user / 1024, mem.size_cdram / 1024,
                  mem.size_phycont / 1024, wrote, probe, lost,
                  (unsigned)(g_disc_io_us / 1000u), g_disc_io_n,
                  g_presents, (unsigned)g_present_rc,
+                 scePowerGetArmClockFrequency(), scePowerGetBusClockFrequency(),
+                 scePowerGetGpuClockFrequency(),
                  hits == last ? "  STALLED" : "",
                  log_stuck ? "  LOGLOCKED" : "");
     wrote = sceIoWrite(fd, buf, (SceSize)(n > 0 ? n : 0));
@@ -689,6 +698,39 @@ static int watchdog(SceSize args, void *argp) {
                        ch->disc.last_len);
       if (in > 0)
         sceIoWrite(fd, ibuf, (SceSize)in);
+      /* The one number that says how fast this actually is.
+       *
+       * Not blocks/s: between the title screen and file select blocks/s rose
+       * 2.3x while the console got 3.3x slower, because file select runs far
+       * more guest code per frame. VI retraces are the emulated machine's own
+       * clock and they do not move with the workload, so they are the only
+       * honest rate. 59.94 is what the hardware does; pct is where we stand
+       * against it. Per tick and not per second on purpose: under one retrace
+       * a second a shorter window samples 0 or 1 and says less, not more. */
+      {
+        u32 vi = ch->flipper.irq_count[2];
+        u32 dvi = vi - last_vi;
+        u32 vi_cs = dvi * 50u;               /* retraces/s x100, tick is 2s */
+        u32 pct_t = (vi_cs * 1000u) / 5994u; /* percent of real time, x10 */
+        last_vi = vi;
+        in = snprintf(ibuf, sizeof(ibuf) - 2u,
+                      "speed vi/s=%u.%02u pct=%u.%u fb mfspr=%u mtspr=%u "
+                      "mftb=%u unk=%u\n",
+                      vi_cs / 100u, vi_cs % 100u, pct_t / 10u, pct_t % 10u,
+                      ch->fb_mfspr, ch->fb_mtspr, ch->fb_mftb, ch->fb_unknown);
+        if (in > 0)
+          sceIoWrite(fd, ibuf, (SceSize)in);
+      }
+      if (gvprof_on()) {
+        gvprof_report(ibuf, sizeof(ibuf) - 2u);
+        in = (int)strlen(ibuf);
+        ibuf[in++] = '\n';
+        sceIoWrite(fd, ibuf, (SceSize)in);
+        /* Rewritten whole every tick rather than appended, so the file is
+         * always the current top-N and a run that is killed still leaves a
+         * readable one. Most runs here are killed. */
+        gvprof_dump_pcs(PROF_PC_PATH, 48u);
+      }
     }
     /* The remote, polled rather than parsed at startup. This thread is
      * already the one doing card I/O on a timer, and two small reads a tick
@@ -924,6 +966,10 @@ static int run_aot(SceSize args, void *argp) {
 
 no_gfx:
   g_watch = &ch;
+  /* CPU2, beside the watchdog and the null audio pump -- CPU0 is the emulator
+   * and CPU1 presents. Sampling from the core being measured would cost the
+   * measurement. */
+  gvprof_start(&ch, AFFINITY_CPU2);
   read_btn_flag();
   chassis_set_input_fn(&ch, vita_pad, NULL);
   /* idle.txt runs the whole setup and then emulates nothing. Everything the
@@ -966,10 +1012,68 @@ no_gfx:
     log_line(buf);
     gx_gxm_shutdown();
   }
+  gvprof_stop();
+  gvprof_dump_pcs(PROF_PC_PATH, 256u);
   gvsc_shutdown();
   gxm_shutdown();
   chassis_shutdown(&ch);
   return 0;
+}
+
+/* What the CPU, bus and GPU are actually running at, before and after we ask.
+ *
+ * This used to log "clock: PSVshellPlus user-controlled" and measure nothing.
+ * A Vita application gets 333 MHz ARM and 111 MHz GPU unless it asks for more,
+ * and nothing here ever asked -- ScePower was not even linked. Whether some
+ * plugin was raising it behind our back was a guess, so the first thing this
+ * does is read the clocks and say what they were: if they come back at 444
+ * already then a plugin really is doing it and raising them again costs
+ * nothing, and if they come back at 333 then every performance number this
+ * project has ever recorded was taken at three quarters speed.
+ *
+ * noclock.txt skips the raise, so the A/B is one binary and one boot apart
+ * rather than two builds -- the same reason nogfx.txt exists. */
+static int g_clk_before[4];
+static int g_clk_after[4];
+
+static void read_clocks(int *out) {
+  out[0] = scePowerGetArmClockFrequency();
+  out[1] = scePowerGetBusClockFrequency();
+  out[2] = scePowerGetGpuClockFrequency();
+  out[3] = scePowerGetGpuXbarClockFrequency();
+}
+
+static void set_clocks(void) {
+  char line[160];
+  SceIoStat st;
+  int skip;
+
+  read_clocks(g_clk_before);
+  memcpy(g_clk_after, g_clk_before, sizeof(g_clk_after));
+
+  memset(&st, 0, sizeof(st));
+  skip = sceIoGetstat(NOCLOCK_FLAG, &st) >= 0;
+
+  snprintf(line, sizeof(line),
+           "clock: on entry arm=%d bus=%d gpu=%d xbar=%d%s",
+           g_clk_before[0], g_clk_before[1], g_clk_before[2], g_clk_before[3],
+           skip ? "  (noclock.txt: leaving them alone)" : "");
+  log_line(line);
+  if (skip)
+    return;
+
+  /* Ask for the maximum the hardware documents. Each call is checked
+   * separately: a refusal on one says nothing about the others, and a
+   * granted-but-lower result is what throttling looks like from here. */
+  (void)scePowerSetArmClockFrequency(444);
+  (void)scePowerSetBusClockFrequency(222);
+  (void)scePowerSetGpuClockFrequency(222);
+  (void)scePowerSetGpuXbarClockFrequency(166);
+  read_clocks(g_clk_after);
+
+  snprintf(line, sizeof(line), "clock: now arm=%d bus=%d gpu=%d xbar=%d",
+           g_clk_after[0], g_clk_after[1], g_clk_after[2], g_clk_after[3]);
+  log_line(line);
 }
 
 int main(void) {
@@ -982,7 +1086,7 @@ int main(void) {
   sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG_WIDE);
 
   log_line("GalaxyVita phase4 boot");
-  log_line("clock: PSVshellPlus user-controlled");
+  set_clocks();
 
   g_mem1 = vita_rw("gv-mem1", GC_MAIN_RAM_SIZE, &g_mem1_uid);
   g_mem2 = vita_rw("gv-mem2", WII_MEM2_SIZE, &g_mem2_uid);
