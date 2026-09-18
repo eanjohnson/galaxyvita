@@ -133,6 +133,29 @@ typedef struct Chassis {
   int dec_irq;
   int idle_note;
   u32 idle_at;
+  /* Idle-skip. The SDK's idle wait is three instructions --
+   *   lwz r0, -8048(r13) ; cmpwi r0, 0 ; bne back
+   * -- so one 10,000-cycle slice of it is 3,419 iterations that load the same
+   * zero out of the thread run queue, compare it, and branch. It writes
+   * nothing and reads nothing but that word, and the only things that can
+   * write that word are guest code (which is not running) and the host's
+   * device emulation (which only runs at dispatch boundaries, between slices).
+   * So a whole slice of it constant-folds to "credit the cycles it would have
+   * burned and leave the registers it would have left" -- not an approximation
+   * of the loop but the loop's exact result, which is why this is gated on
+   * bit-identical host output rather than on a plausibility argument.
+   *
+   * The cost of a slice is not written down here. The first idle dispatch runs
+   * for real and records it, and every IDLE_RECHECK-th one runs for real again
+   * and compares. If the generated code ever stops matching -- a different
+   * chunk size, a changed emitter, a different loop budget -- the skip turns
+   * itself off and says so in the log, rather than quietly crediting the wrong
+   * number of cycles. */
+  int idle_skip;
+  u32 idle_used;
+  u32 idle_poll_ea;
+  u32 idle_skips;
+  u32 idle_checks;
   int fifo_hit;
   int stop_reason;
   int owns_ram;

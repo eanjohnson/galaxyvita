@@ -42,6 +42,14 @@
 #define PI_IRQ_VECTOR 0x80000500u
 #define DEC_VECTOR 0x80000900u
 #define OS_IDLE_WAIT 0x804AB358u
+/* The displacement in the idle wait's own lwz: r13 is the small-data base and
+ * the word is the thread run queue's head. Read by the idle-skip fold and by
+ * the one-off idle log below, which is where it was first worked out. */
+#define OS_IDLE_RUNQ_OFF (-8048)
+/* How often a folded idle dispatch is run for real instead, to re-derive what
+ * a slice costs. 1/256 of the idle time, against getting the cycle count
+ * silently wrong forever. */
+#define IDLE_RECHECK 256u
 /* The Bluetooth stack's own trace sink. WUD embeds a Broadcom BTE stack whose
  * BTU/BTM/L2CAP layers all funnel their diagnostics through this one function
  * as (mask, format, ...), so catching it here is how the stack says what it is
@@ -1049,6 +1057,9 @@ int chassis_init(Chassis *ch, void *mem1, u32 mem1_size, void *mem2,
     memset(ch->cpu.mem2, 0, ch->cpu.mem2_size);
 
   ios_init(&ch->ios, log, log_user);
+  /* Armed, but it folds nothing until a real dispatch has told it what a
+   * slice of the idle wait costs. */
+  ch->idle_skip = 1;
   ch->dvd_log_left = 64;
   ch->bte_log_left = 4096;
   flipper_init(&ch->flipper);
@@ -1399,7 +1410,25 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
     ch->cpu.downcount = SLICE_CYCLES;
     ch->ran_from = pc;
     ch->phase = pc == OS_IDLE_WAIT ? CHASSIS_PH_IDLE : CHASSIS_PH_GUEST;
-    if (!dolrecomp_call(&ch->cpu, pc)) {
+    /* Fold the idle wait rather than run it. The run queue is re-read every
+     * time, so this gives up the moment the guest has something to do. */
+    int folded = 0;
+    if (pc == OS_IDLE_WAIT && ch->idle_skip && ch->idle_used != 0u &&
+        ((ch->idle_skips + ch->idle_checks) % IDLE_RECHECK) != 0u &&
+        mem_read32(&ch->cpu,
+                   ch->cpu.gpr[13] + (u32)(s32)OS_IDLE_RUNQ_OFF) == 0u)
+      folded = 1;
+    if (folded) {
+      /* Exactly what those 3,419 iterations leave behind: r0 holding the zero
+       * it kept loading, CR0 saying equal with SO copied out of XER the way
+       * cmpwi does, and the pc back at the top of the loop. */
+      ch->cpu.gpr[0] = 0u;
+      ch->cpu.cr = (ch->cpu.cr & ~(0xFu << 28)) |
+                   ((0x2u | ((ch->cpu.xer >> 31) & 1u)) << 28);
+      ch->cpu.pc = OS_IDLE_WAIT;
+      ch->cpu.downcount = (s64)SLICE_CYCLES - (s64)ch->idle_used;
+      ch->idle_skips++;
+    } else if (!dolrecomp_call(&ch->cpu, pc)) {
       ch->dispatch_misses++;
       ch->uncovered_pc = pc;
       ch->stop_reason = CHASSIS_STOP_MISS;
@@ -1413,6 +1442,32 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
     }
     ch->dispatch_hits++;
     blocks++;
+    /* What a real slice of the idle wait costs, taken from the generated code
+     * rather than assumed about it -- and re-taken periodically, so that a
+     * regenerated tree cannot leave a stale number in place. */
+    if (pc == OS_IDLE_WAIT && !folded && ch->idle_skip &&
+        ch->cpu.pc == OS_IDLE_WAIT) {
+      u32 used = (u32)((s64)SLICE_CYCLES - ch->cpu.downcount);
+      u32 ea = ch->cpu.gpr[13] + (u32)(s32)OS_IDLE_RUNQ_OFF;
+      if (mem_read32(&ch->cpu, ea) != 0u) {
+        /* It spun the whole slice, so whatever it polls is still zero. If the
+         * word at this address is not, then this is not the word it polls,
+         * and folding would spin on a queue that already has work in it. */
+        ch->idle_skip = 0;
+        ch_logf(ch, "idle skip off: 0x%08x is not the polled word", ea, 0, 0);
+      } else if (ch->idle_used == 0u) {
+        ch->idle_used = used;
+        ch->idle_poll_ea = ea;
+        ch_logf(ch, "idle skip armed: slice=%u cycles ea=0x%08x hits=%u", used,
+                ea, ch->dispatch_hits);
+      } else if (used != ch->idle_used) {
+        ch_logf(ch, "idle skip off: slice cost moved %u -> %u at hits=%u",
+                ch->idle_used, used, ch->dispatch_hits);
+        ch->idle_skip = 0;
+      } else {
+        ch->idle_checks++;
+      }
+    }
     if (ch->cpu.pc == 0u) {
       if (ch->cpu.lr >= GC_RAM_BASE &&
           ch->cpu.lr < GC_RAM_BASE + ch->cpu.ram_size) {

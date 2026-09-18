@@ -307,6 +307,10 @@ int main(int argc, char **argv) {
     if (rc && *rc)
       ch.retrace_cap = (u32)strtoul(rc, NULL, 10);
   }
+  /* The idle fold is meant to be invisible, so the A/B that proves it has to
+   * be available without a rebuild. */
+  if (getenv("GV_NO_IDLE_SKIP"))
+    ch.idle_skip = 0;
   prof_start();
   if (!chassis_load_dol(&ch, dol))
     return 1;
@@ -317,6 +321,8 @@ int main(int argc, char **argv) {
          chassis_stop_name(ch.stop_reason), ch.dispatch_hits, ch.dispatch_misses,
          ch.fifo_writes, ch.fifo_ea, ch.fifo_pc, ch.mmio_reads, ch.mmio_writes,
          ch.smc_hits, ch.last_pc, ch.flipper.retrace, (u32)gx_cp_commands(ch.gx));
+  printf("idle skip=%d folded=%u checked=%u slice=%u ea=0x%08x\n", ch.idle_skip,
+         ch.idle_skips, ch.idle_checks, ch.idle_used, ch.idle_poll_ea);
   printf("lr=0x%08x ctr=0x%08x r1=0x%08x msr=0x%08x irq=%u cause=0x%x "
          "mask=0x%x\n",
          ch.last_lr, ch.last_ctr, ch.cpu.gpr[1], ch.cpu.msr, ch.irq_taken,

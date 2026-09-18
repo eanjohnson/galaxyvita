@@ -44,6 +44,8 @@
 #define IDLE_FLAG "ux0:data/galaxyvita/idle.txt"
 /* Skip the clock raise, so one binary can be A/B'd across two boots. */
 #define NOCLOCK_FLAG "ux0:data/galaxyvita/noclock.txt"
+/* Turns the idle fold off, so its A/B is one binary and one boot apart. */
+#define NOSKIP_FLAG "ux0:data/galaxyvita/noskip.txt"
 /* Where the sampling profiler leaves its guest-PC histogram. */
 #define PROF_PC_PATH "ux0:data/galaxyvita/prof-pc.txt"
 /* Buttons to hold down without anyone holding them. The boot is gated by
@@ -989,6 +991,14 @@ no_gfx:
       log_line("idle: held 60s without being stopped");
       log_flush();
       return 0;
+    }
+  }
+  {
+    SceIoStat sst;
+    memset(&sst, 0, sizeof(sst));
+    if (sceIoGetstat(NOSKIP_FLAG, &sst) >= 0) {
+      ch.idle_skip = 0;
+      log_line("idle skip disabled by " NOSKIP_FLAG);
     }
   }
   {
