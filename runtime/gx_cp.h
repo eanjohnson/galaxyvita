@@ -47,6 +47,17 @@ void gx_cp_reset(GxCp *cp);
 
 void gx_cp_write(GxCp *cp, u64 value, u8 size);
 void gx_cp_set_sink(GxCp *cp, const GxSink *sink);
+
+/* Where the GX stack publishes which part of itself is running, for a sampler
+ * on another thread; see disc_set_phase_slot, which this follows.
+ *
+ * One `gx` phase conflated command parse, vertex load and GXM submission, and
+ * the nogfx A/B showed the first and last differ by 2.7x -- so a single number
+ * ranked none of the work that could be done to any of them. gx_cp.cpp and
+ * ModernGekko have no Chassis and must keep having none, so the chassis hands
+ * over the byte and the four values, and nothing else crosses. */
+void gx_cp_set_phase_slot(volatile u8 *slot, u8 parse, u8 vtxload, u8 submit,
+                          u8 copy);
 const GxRegs *gx_cp_regs(const GxCp *cp);
 
 u32 gx_cp_pending(const GxCp *cp);

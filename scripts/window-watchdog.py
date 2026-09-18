@@ -35,14 +35,18 @@ def ticks(path):
         m = re.match(r'prof samples=(\d+) over=(\d+)ms', line)
         if m:
             cur['samples'], cur['ms'] = int(m.group(1)), int(m.group(2))
-            for k, v in re.findall(r'(guest|idle|disp|gx|ios|mmio|disc)=(\d+)', line):
+            for k, v in re.findall(r'(guest|idle|disp|gxvtx|gxsub|gxcopy|gx|ios|mmio|disc)=(\d+)', line):
                 cur[k] = int(v)
         m = re.match(r'gxm frames=(\d+)', line)
         if m:
             cur['frames'] = int(m.group(1))
     return [t for t in out if 'samples' in t and 'vi' in t]
 
-PH = ['guest', 'idle', 'disp', 'gx', 'ios', 'mmio', 'disc']
+# gxvtx/gxsub/gxcopy are absent from logs written before the split and read
+# as zero there, which is what a run that did not measure them should look
+# like, and keeps those logs comparable on every other phase.
+PH = ['guest', 'idle', 'disp', 'gx', 'gxvtx', 'gxsub', 'gxcopy',
+      'ios', 'mmio', 'disc']
 
 def window(ts, lo, hi):
     a = min(ts, key=lambda x: abs(x['t'] - lo))

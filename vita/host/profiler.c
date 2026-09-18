@@ -13,7 +13,7 @@
  * more than a phase of this game touches at block granularity -- the whole
  * dispatch census uses the same size -- and if it ever does fill, overflow is
  * counted rather than silently folded into a neighbour. */
-#define PROF_SLOTS 4096u
+#define PROF_SLOTS 65536u
 
 static const Chassis *volatile g_ch;
 static volatile int g_run;
@@ -104,8 +104,9 @@ void gvprof_stop(void) {
 int gvprof_on(void) { return g_on; }
 
 void gvprof_report(char *out, unsigned n) {
-  static const char *k_name[CHASSIS_PH_COUNT] = {"guest", "idle", "disp",
-                                                 "gx",    "ios",  "mmio", "disc"};
+  static const char *k_name[CHASSIS_PH_COUNT] = {"guest", "idle",  "disp",
+                                                 "gx",    "ios",   "mmio", "disc",
+                                                 "gxvtx", "gxsub", "gxcopy"};
   SceUInt64 now = g_run ? (SceUInt64)sceKernelGetProcessTimeWide() : g_t1;
   u32 s = g_samples;
   u32 ms = g_t0 ? (u32)((now - g_t0) / 1000u) : 0u;

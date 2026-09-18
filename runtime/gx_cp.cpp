@@ -18,6 +18,13 @@
  */
 
 #include "gx_cp.h"
+#include "moderngekko/phase_hook.hpp"
+
+/* Zero until the chassis wires them up, and zero is CHASSIS_PH_GUEST, which
+ * the GX path can never legitimately be in -- so an unwired build publishes
+ * nothing rather than publishing a lie. */
+static u8 g_ph_submit;
+static u8 g_ph_copy;
 
 #include "moderngekko/address_space.hpp"
 #include "moderngekko/gx_command_processor.hpp"
@@ -212,7 +219,10 @@ struct GxCp final
        * of it directly, and re-deriving them from a decoded struct would be a
        * second place for that decode to be wrong. */
       if (sink.copy != nullptr)
+      {
+        moderngekko::PhaseScope phase(g_ph_copy);
         sink.copy(sink.user, value & 0xFFFFFFu);
+      }
       break;
     default:
       break;
@@ -295,6 +305,9 @@ struct GxCp final
     }
 
     const std::uint8_t opcode = OpcodeFor(packet.primitive);
+    /* One scope over the whole handoff rather than one per vertex: the sink is
+     * a single cost, and 63k scopes a frame would be measuring the instrument. */
+    moderngekko::PhaseScope phase(g_ph_submit);
     sink.prim_begin(sink.user, opcode, packet.vertex_count);
     /* decoded.vertices is in decode order -- the loader appends as it reads and
      * builds `indices` separately -- so streaming it reproduces the wire order
@@ -473,6 +486,16 @@ void gx_cp_trace_flush(GxCp *cp)
     std::fprintf(stderr, "gx trace -> %s (%u bytes)\n", cp->trace_path,
                  cp->traced);
   }
+}
+
+void gx_cp_set_phase_slot(volatile u8 *slot, u8 parse, u8 vtxload, u8 submit,
+                          u8 copy)
+{
+  (void)parse; /* the chassis already sets it around the whole MMIO write */
+  g_ph_submit = submit;
+  g_ph_copy = copy;
+  moderngekko::g_phase_slot = slot;
+  moderngekko::g_phase_vertex_load = vtxload;
 }
 
 void gx_cp_set_sink(GxCp *cp, const GxSink *sink)

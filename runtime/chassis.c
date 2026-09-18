@@ -1057,6 +1057,8 @@ int chassis_init(Chassis *ch, void *mem1, u32 mem1_size, void *mem2,
    * straight out of guest RAM, so it adopts the same MEM1/MEM2 the CPU sees
    * rather than keeping a copy. Both stay owned by the caller. */
   ch->gx = gx_cp_create(mem1, mem1_size, mem2, mem2_size);
+  gx_cp_set_phase_slot(&ch->phase, CHASSIS_PH_GX, CHASSIS_PH_GXVTX,
+                       CHASSIS_PH_GXSUB, CHASSIS_PH_GXCOPY);
   if (ch->gx == NULL)
     return 0;
 

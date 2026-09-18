@@ -30,10 +30,17 @@ enum {
   CHASSIS_PH_GUEST = 0,  /* inside recompiled code */
   CHASSIS_PH_IDLE,       /* recompiled code, but the SDK's idle wait */
   CHASSIS_PH_DISPATCH,   /* the chassis loop's own per-block work */
-  CHASSIS_PH_GX,         /* FIFO decode and the GXM sink under it */
+  CHASSIS_PH_GX,         /* FIFO command parse, the three below split out */
   CHASSIS_PH_IOS,        /* IOS/Bluetooth service, flipper, interrupts */
   CHASSIS_PH_MMIO,       /* other emulated MMIO */
   CHASSIS_PH_DISC,       /* blocked on the memory card, inside an IOS read */
+  /* What used to be one gx phase. Split because the nogfx A/B showed the
+   * halves differ by 2.7x at the slow end and rank different work: GXVTX is
+   * the vertex loader and the per-draw vectors it fills, GXSUB is sceGxmDraw
+   * and the state re-issued around it, GXCOPY is the copy and present. */
+  CHASSIS_PH_GXVTX,
+  CHASSIS_PH_GXSUB,
+  CHASSIS_PH_GXCOPY,
   CHASSIS_PH_COUNT
 };
 
