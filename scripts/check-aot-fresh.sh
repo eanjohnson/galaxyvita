@@ -21,6 +21,17 @@ OBJ="${1:-$ROOT/generated/build/aot-vita}"
 [[ -f "$OBJ/build.ninja" ]] || exit 0
 command -v ninja >/dev/null || exit 0
 
+# "Re-running CMake" is not a stale object. ninja schedules it whenever the
+# CMakeLists it was generated from has a newer mtime -- which measure-aot-size.sh
+# causes every time it rewrites that file with identical content -- and until it
+# has run, ninja cannot say whether any object is actually out of date. So run
+# it, then ask again. It takes a fraction of a second, and without this the
+# check fails on a fresh tree, which is the fastest way to teach someone to
+# ignore it.
+if ninja -C "$OBJ" -n 2>/dev/null | grep -q 'Re-running CMake'; then
+  ninja -C "$OBJ" build.ninja >/dev/null 2>&1 || true
+fi
+
 pending=$(ninja -C "$OBJ" -n 2>/dev/null | grep -c '^\[' || true)
 if [[ "$pending" -eq 0 ]]; then
   echo "check-aot-fresh: ok (${OBJ##*/} is up to date with the generated C)"
