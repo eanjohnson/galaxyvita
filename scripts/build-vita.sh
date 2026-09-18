@@ -10,7 +10,18 @@ if [[ -z "${VITASDK:-}" || ! -x "$VITASDK/bin/arm-vita-eabi-gcc" ]]; then
   exit 1
 fi
 
-BUILD="$ROOT/generated/build/vita"
+BUILD="${GV_VITA_BUILD:-$ROOT/generated/build/vita}"
+# Which AOT trees to link. They travel as a pair; see the comment in
+# CMakeLists.txt. Empty means the defaults baked into CMakeLists.
+# if-blocks and not `[[ ... ]] && ...`: under `set -e` a trailing test that
+# fails is the script's exit status, so the unset case would abort the build.
+AOT_ARGS=()
+if [[ -n "${GV_AOT_GEN_DIR:-}" ]]; then
+  AOT_ARGS+=(-DAOT_GEN_DIR="$GV_AOT_GEN_DIR")
+fi
+if [[ -n "${GV_AOT_OBJ_DIR:-}" ]]; then
+  AOT_ARGS+=(-DAOT_OBJ_DIR="$GV_AOT_OBJ_DIR")
+fi
 mkdir -p "$BUILD"
 
 # vita-elf-create appends about 1.8 KB of SCE module data at the end of the
@@ -26,6 +37,7 @@ for _ in $(seq 1 16); do
   cmake -S "$ROOT" -B "$BUILD" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DGALAXYVITA_LINK_PAD="$PAD" \
+    ${AOT_ARGS[@]+"${AOT_ARGS[@]}"} \
     -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
 
   if cmake --build "$BUILD" 2>&1 | tee "$BUILD/build.log"; then

@@ -23,8 +23,17 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -O2")
 
 set(DOLRECOMP_SRC "${CMAKE_SOURCE_DIR}/third_party/DolRecomp/src")
 set(MODERNGEKKO "${CMAKE_SOURCE_DIR}/third_party/ModernGekko")
-set(AOT_GEN_DIR "${CMAKE_SOURCE_DIR}/generated/aot/generated")
-set(AOT_OBJ_DIR "${CMAKE_SOURCE_DIR}/generated/build/aot-vita")
+# Overridable so two recompiler variants can be linked and flown against each
+# other without either one clobbering the other's objects. They travel as a
+# pair: objects built from one tree of generated C and the headers of another
+# would compile and link and be wrong, which is the failure check-aot-fresh.sh
+# exists to catch and cannot catch across trees.
+set(AOT_GEN_DIR "${CMAKE_SOURCE_DIR}/generated/aot/generated"
+    CACHE PATH "generated AOT C to compile and include")
+set(AOT_OBJ_DIR "${CMAKE_SOURCE_DIR}/generated/build/aot-vita"
+    CACHE PATH "prebuilt AOT objects to link")
+message(STATUS "AOT C:       ${AOT_GEN_DIR}")
+message(STATUS "AOT objects: ${AOT_OBJ_DIR}")
 
 file(GLOB_RECURSE GALAXYVITA_AOT_OBJS "${AOT_OBJ_DIR}/*.obj")
 if(GALAXYVITA_AOT_OBJS)
