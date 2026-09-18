@@ -2,6 +2,81 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — The idle wait was 60% of the console, and it constant-folds
+
+The chassis has recognised `OS_IDLE_WAIT` since the profiler landed and used it
+only to write a log line. It is the largest single phase on the device: 60.1% of
+wall clock at retraces 400-800, and 21-26% after that.
+
+Reading the generated C settles what it is, which nobody had done:
+
+    804AB358: lwz   r0, -8048(r13)     ; the thread run queue head
+    804AB35C: cmpwi r0, 0
+    804AB360: bne   0x804AB358
+
+Three instructions, one RAM read, no stores, no MMIO. The emitter decrements
+`downcount` by 3 an iteration and returns at `-DOLRECOMP_C_LOOP_CYCLE_BUDGET`,
+so a 10,000-cycle slice is exactly 3,419 iterations costing exactly 10,257
+cycles, loading the same zero 3,419 times.
+
+**Nothing can change that word during a slice.** Guest code is not running, and
+the host's device emulation -- `ios_bt_service`, `flipper_advance`,
+`maybe_irq` -- runs only at dispatch boundaries, between slices. So the slice
+constant-folds: credit the cycles, leave r0 zero, set CR0 equal with SO copied
+out of XER the way `cmpwi` does, put the pc back at the top of the loop. That is
+not an approximation of the loop; it is the loop's exact result. The plan had
+this down as needing a plausibility argument about interrupt sources, and it
+needs none -- which is why it could be gated on bit-identity instead.
+
+At a 1200-retrace cap, fold on, fold off and the unpatched tree agree on every
+counter: 6,501,763 dispatches, 2,790,620 FIFO writes, 1,109,347 GX commands,
+84,266/2,850,229 MMIO, 14,597,079,739 cycles, 1,216,423,311 timebase, 41,198
+interrupts, 33,030 decrementer asserts, 7,636,464 GX bytes, 6,315 draws, 25,260
+vertices, 5,894 disc reads, and the same final pc, lr, ctr, r1 and msr -- while
+1,326,492 dispatches, 20.4% of them, take a different path through the chassis.
+
+On the console, both arms the same binary one boot apart, `noskip.txt` deciding:
+
+| retraces | fold off | fold on | |
+|---|---|---|---|
+| 400-800 | 3.76 VI/s | 9.62 VI/s | **2.56x** |
+| 800-1100 | 1.80 VI/s | 2.46 VI/s | **1.37x** |
+| 1100-1400 | 1.49 VI/s | 1.89 VI/s | **1.27x** |
+
+The phase seconds are the real confirmation, and they corroborate the host gate
+from the opposite direction. At 1100-1400: idle 42.7s -> 0.2s, while guest
+54.7 -> 54.4, dispatch 11.0 -> 10.9, gx parse 20.3 -> 20.2, vertex load
+42.5 -> 41.9, submit 16.3 -> 16.2, copy 5.9 -> 5.6, IOS 8.7 -> 8.5. Every other
+phase holds to within 1-2% while idle falls by a factor of 200. A change that
+only stops executing one loop cannot look like anything else.
+
+The 0.2-0.3s of idle left is the 1-in-256 re-check, which re-derives the slice
+cost from the generated code rather than trusting a number forever: 63.7/256 =
+0.25s, which is what it costs. The console armed the fold at exactly the same
+slice cost and poll address as the host, `slice=10257 cycles ea=0x806a2d30`.
+The whole thing is 240 bytes of code -- ELF 95,350,340 against 95,350,100.
+
+Cumulative, matched on retraces:
+
+| | 400-800 | 800-1100 |
+|---|---|---|
+| baseline, as the console really ran | 2.19 | 0.96 |
+| + clock raise 444/222/222 | 3.01 (1.37x) | 1.28 (1.33x) |
+| + cross-chunk direct calls | 3.61 (1.20x) | 1.70 (1.33x) |
+| + pooled decode buffer | 3.75 (1.04x) | 1.79 (1.05x) |
+| + idle fold | **9.62 (2.56x)** | **2.46 (1.37x)** |
+| **cumulative** | **4.39x** | **2.56x** |
+
+Retraces 400 to 1400 now take 324s where they took 474s tonight and would have
+taken far longer before any of this: 28.4x slower than a real Wii over that
+span, down from 62x at the start of the day. The early window is 6.2x off real
+time.
+
+What this leaves on top. At 400-800 the run is now guest code (16.8s) and EFB
+copy (12.8s); at 1100-1400 it is guest code (54.4s) and vertex loading (41.9s),
+with GX parse 20.2s and submit 16.2s behind them. Idle is gone as a target and
+the two remaining ones are the recompiled code itself and the vertex path.
+
 ## 2026-09-18 — Smaller chunks are 6-7% slower, and the I-cache hypothesis is dead
 
 The plan's third piece of verified evidence was that every chunk function is
