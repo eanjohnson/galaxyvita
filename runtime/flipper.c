@@ -116,14 +116,32 @@ int flipper_is_mmio(u32 ea) {
 #define PE_CTRL_TOKEN_ACK 0x4u
 #define PE_CTRL_FINISH_ACK 0x8u
 
+/* Slots in Flipper::irq_count, in the order the report prints them. */
+enum {
+  IRQ_SLOT_AI = 0,
+  IRQ_SLOT_DSP = 1,
+  IRQ_SLOT_VI = 2,
+  IRQ_SLOT_PE_TOKEN = 3,
+  IRQ_SLOT_PE_FINISH = 4,
+  IRQ_SLOT_IPC = 5
+};
+
+/* Assert a cause bit, counting the rising edge only. Re-asserting a level that
+ * is already high is not a new interrupt and must not read as one. */
+static void pi_assert(Flipper *f, u32 bit, unsigned slot) {
+  if (!(f->pi_cause & bit))
+    f->irq_count[slot]++;
+  f->pi_cause |= bit;
+}
+
 static void pe_update_irq(Flipper *f) {
   u16 ctrl = f->pe[PE_CTRL_OFF / 2];
   if (f->pe_token_irq && (ctrl & PE_CTRL_TOKEN_ENABLE))
-    f->pi_cause |= PI_CAUSE_PE_TOKEN;
+    pi_assert(f, PI_CAUSE_PE_TOKEN, IRQ_SLOT_PE_TOKEN);
   else
     f->pi_cause &= ~PI_CAUSE_PE_TOKEN;
   if (f->pe_finish_irq && (ctrl & PE_CTRL_FINISH_ENABLE))
-    f->pi_cause |= PI_CAUSE_PE_FINISH;
+    pi_assert(f, PI_CAUSE_PE_FINISH, IRQ_SLOT_PE_FINISH);
   else
     f->pi_cause &= ~PI_CAUSE_PE_FINISH;
 }
@@ -146,7 +164,7 @@ static void dsp_update_irq(Flipper *f) {
   u16 csr = f->dsp[0x0A / 2];
   int pending = ((csr >> 1) & csr & (DSP_INT | 0x20u | 0x08u)) != 0;
   if (pending)
-    f->pi_cause |= PI_CAUSE_DSP;
+    pi_assert(f, PI_CAUSE_DSP, IRQ_SLOT_DSP);
   else
     f->pi_cause &= ~PI_CAUSE_DSP;
 }
@@ -321,7 +339,7 @@ void flipper_init(Flipper *f) {
  * re-derived here rather than assumed at the point either one moves. */
 static void sync_ai_irq(Flipper *f) {
   if ((f->ai[AI_CR] & AICR_AIINT) && (f->ai[AI_CR] & AICR_AIINTMSK))
-    f->pi_cause |= PI_CAUSE_AI;
+    pi_assert(f, PI_CAUSE_AI, IRQ_SLOT_AI);
   else
     f->pi_cause &= ~PI_CAUSE_AI;
 }
@@ -350,7 +368,7 @@ static void sync_vi_irq(Flipper *f) {
   int status = (di0 & 0x8000u) != 0;
   int enable = (di0 & 0x1000u) != 0;
   if (status && enable)
-    f->pi_cause |= PI_CAUSE_VI;
+    pi_assert(f, PI_CAUSE_VI, IRQ_SLOT_VI);
   else
     f->pi_cause &= ~PI_CAUSE_VI;
 }
@@ -388,7 +406,7 @@ void ipc_update_irq(Flipper *f) {
       ((ctrl & IPC_CTRL_Y2) && (ctrl & IPC_CTRL_IY2)))
     f->ipc_irq_flag |= 0x40000000u;
   if (f->ipc_irq_flag & f->ipc_irq_mask)
-    f->pi_cause |= PI_CAUSE_IPC;
+    pi_assert(f, PI_CAUSE_IPC, IRQ_SLOT_IPC);
   else
     f->pi_cause &= ~PI_CAUSE_IPC;
 }

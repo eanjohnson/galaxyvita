@@ -636,6 +636,23 @@ static int watchdog(SceSize args, void *argp) {
      * the cache and never reach the card, which reads from the host exactly
      * like a thread that stopped running. The whole point of this thread is to
      * be believed about that distinction, so pay for the sync. */
+    /* Which interrupt is firing, not just how many. A guest dispatching flat
+     * out with a frozen GX FIFO is either starved of an interrupt or drowning
+     * in one, and the edge counts per source are what tell the two apart.
+     * Every tick, because the rate is the whole point. */
+    {
+      char ibuf[192];
+      int in;
+      in = snprintf(ibuf, sizeof(ibuf) - 2u,
+                    "irq ai=%u dsp=%u vi=%u petok=%u pefin=%u ipc=%u "
+                    "cause=0x%08x mask=0x%08x\n",
+                    ch->flipper.irq_count[0], ch->flipper.irq_count[1],
+                    ch->flipper.irq_count[2], ch->flipper.irq_count[3],
+                    ch->flipper.irq_count[4], ch->flipper.irq_count[5],
+                    ch->flipper.pi_cause, ch->flipper.pi_mask);
+      if (in > 0)
+        sceIoWrite(fd, ibuf, (SceSize)in);
+    }
     /* The remote, polled rather than parsed at startup. This thread is
      * already the one doing card I/O on a timer, and two small reads a tick
      * are nothing beside the log it just wrote. */

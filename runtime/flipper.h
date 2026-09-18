@@ -13,6 +13,12 @@ typedef struct Flipper {
   u16 vi[64];
   u32 pi_cause;
   u32 pi_mask;
+  /* Rising edges per interrupt source: AI, DSP, VI, PE token, PE finish, IPC.
+   * A guest that is running flat out and drawing nothing is either waiting for
+   * an interrupt that never comes or drowning in one that does, and the two
+   * look identical from outside. Counting the edges separates them and names
+   * the source. */
+  u32 irq_count[6];
   u32 pi_fifo_base;
   u32 pi_fifo_end;
   u32 pi_fifo_wptr;
