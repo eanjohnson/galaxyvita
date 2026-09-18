@@ -2,6 +2,89 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — The chassis was re-entered every 371 cycles of a 10,000-cycle slice
+
+`emit_set_chunk_table()` has been in DolRecomp's emitter since the direct-call
+path was written, with **no caller anywhere in the tree**. So `g_chunk_starts`
+stayed NULL, `emit_cross_chunk_call()` returned false every time, and every
+cross-chunk `bl` in Super Mario Galaxy returned to the chassis dispatcher
+instead of calling the next chunk directly. Wiring it up is one call and an
+env knob, `DOLRECOMP_C_CROSS_CHUNK_CALLS`.
+
+The size of what that cost is best seen not in the dispatch count but in the
+dispatch *budget*. The chassis hands each dispatch `SLICE_CYCLES = 10000`
+emulated cycles and credits back whatever was used. Running to a fixed 1200 VI
+retraces:
+
+| | dispatches | cycles per dispatch | share of the 10,000 budget |
+|---|---|---|---|
+| before | 39,344,199 | 371.0 | **3.7%** |
+| after | 6,501,763 | 2245.1 | 22.5% |
+
+The chassis was being re-entered **27 times more often than its own slice
+budget intended**, because a dispatch almost never ended on the budget -- it
+ended on the next subroutine call. 150,742 call sites across 1321 of the 1322
+chunks now call directly instead.
+
+### The gate needed a new ruler
+
+Every equivalence check in this project so far has compared two builds at a
+fixed block count. That ruler is wrong for this change, and was wrong for the
+idle skip before it: a block is a *host dispatch*, and both changes exist
+precisely to make one dispatch cover more guest code. At a fixed block count
+the two builds run the game to different places, and then every counter
+downstream moves for reasons that have nothing to do with correctness. That is
+most of why the idle-skip sweep was so hard to read.
+
+`Chassis.retrace_cap` stops on the guest's own clock instead -- `GV_RETRACE_CAP`
+in the host harness. At a fixed 1200 retraces:
+
+```
+cycles     14,597,081,505  vs  14,597,079,739   difference 1,766  (0.0000121%)
+timebase    1,216,423,458  vs   1,216,423,311   difference   147
+disc        reads=5894 bytes=22589152           identical
+gx/fifo          0.397526  vs        0.397527
+draws/gx (per mil) 5.6928  vs          5.6925
+vtx/draw           4.0000  vs          4.0000
+```
+
+Twelve parts per billion on total emulated cycles. The residual is the cap
+firing at the first dispatch boundary past the retrace, and the two builds have
+different boundaries: between 400 and 1200 retraces the absolute gap stays flat
+(2314 -> 2555 FIFO writes) while the relative gap falls threefold, 0.281% ->
+0.091%. Divergence grows; a fixed stop offset does not.
+
+### The hook that would have been stepped over
+
+Direct calls skip whatever the host does between blocks, and here one of those
+things is load-bearing. `runtime/hle_hooks.h` answers nine guest functions
+natively -- the WUD/Bluetooth entry points, so that a stack this port has no
+radio for stays dormant. A `bl` to one of them in another chunk would, with
+direct calls on, enter that chunk, hit its entry `switch`, and run the
+recompiled guest code the hook exists to replace.
+
+`patch-aot-hle.py` cannot help. It rewrites *local* gotos and deliberately
+leaves the entry switch alone, and says why in a comment: "the chassis
+intercepts before the chunk is ever entered". That sentence was true when it
+was written and is exactly the assumption direct calls break. So the emitter
+now takes a list of addresses the host intercepts and keeps the old form for
+them; `generate-aot.sh` points it at `hle_hooks.h` itself rather than a
+generated copy, so the two cannot drift apart.
+
+Twenty real `bl` sites are covered. Without the list the Bluetooth stack would
+have woken up, thousands of blocks from anything that looked like a cause.
+
+SMC sites turned out not to be a hazard: `chassis.c` only counts them.
+
+### What this does not tell us
+
+Dispatch count is not VI/s. The chassis round trip may be cheap; 6x less of
+something free is still free. The profile puts `disp` at 15.4% of the slow
+phase and `ios` at 9.6% -- and `ios_bt_service`, `flipper_advance` and
+`maybe_irq` all run once per dispatch inside `advance_time`, so they thin out
+with it. That is the wager. The device A/B in VI/s is the test, and it is the
+only number that decides whether this lands.
+
 ## 2026-09-18 — The console was profiled, and it was never running at full clock
 
 Two findings, one of which invalidates every performance number this file
