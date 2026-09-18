@@ -2,6 +2,65 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — The emulator is CPU-clock-bound, and graphics is worth 1.25x at most
+
+Two device A/Bs, both matched on VI retraces rather than wall clock. That
+matching is not a detail: the runs reach different parts of the game at the
+same second, which is the whole point of making one faster, and comparing them
+at matched wall clock gave answers that went in both directions and read as
+noise. The tell was guest cost per frame differing between two runs that
+differ only on the host side, which nothing on the host can cause.
+
+### The clock is worth exactly its ratio
+
+`gfx` ran at 444/222/222, `noclock` at the stock 333/222/111.
+
+| retraces | 444 MHz | 333 MHz | speedup |
+|---|---|---|---|
+| 100-400 | 3.64 VI/s (84 s) | 2.66 VI/s (112 s) | **1.37x** |
+| 400-800 | 3.01 (132 s) | 2.19 (182 s) | **1.37x** |
+| 800-1100 | 1.29 (232 s) | 0.96 (312 s) | **1.34x** |
+
+The CPU clock ratio is 444/333 = 1.333. The measured speedup is that ratio and
+nothing more, in every window. Two things follow.
+
+**No throttling.** The gain is as large in the last window, at t=682 s, as in
+the first at t=56 s. PROGRESS.md has recorded an unexplained "plateau" before
+now; whatever it was, it was not the SoC backing off, because an 11-minute run
+holds its clock.
+
+**Doubling the GPU clock bought nothing measurable.** 111 -> 222 MHz was in the
+same change and the total is still just the CPU ratio. Every phase share is
+also unchanged between the two clocks -- guest 26.6% vs 25.8%, idle 19.5% vs
+19.4%, disp 17.4% vs 16.9% -- which is the signature of a workload where
+everything scales with one clock. The console is not waiting on its GPU.
+
+### Graphics is a third of the time and worth at most a quarter of it
+
+`nogfx.txt` skips installing the GX sink, so the GXM submission path never
+runs. ModernGekko's FIFO decoder still does, because that belongs to the
+chassis.
+
+| retraces | with GXM | without | speedup | gx share |
+|---|---|---|---|---|
+| 400-800 | 132 s | 120 s | **1.10x** | 10.8% -> 1.7% |
+| 800-1100 | 232 s | 186 s | **1.25x** | 25.4% -> 19.3% |
+
+So the entire GXM backend -- every `sceGxmDraw`, every state call, the whole
+batching workstream that Phase 4 of the optimisation plan is built around --
+is worth **1.25x at the slow phase, and that is the ceiling**, not an
+estimate of what batching would achieve. Deleting the backend outright is the
+upper bound and it is 25%.
+
+And the run with graphics off *still* spends 19.3% of its time in `gx`. That
+is FIFO decode, vertex loading and state tracking, which no item in Phase 4
+touches. The single `gx` phase has been conflating two different costs of
+roughly equal size, and needs splitting before any graphics work is aimed.
+
+The plan's ranking therefore inverts. The recompiler work is the larger
+target: `disp` is 17.4% and `ios` 11.0% at the same phase, and both fall with
+the dispatch count.
+
 ## 2026-09-18 — The chassis was re-entered every 371 cycles of a 10,000-cycle slice
 
 `emit_set_chunk_table()` has been in DolRecomp's emitter since the direct-call
