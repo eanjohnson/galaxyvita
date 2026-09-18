@@ -239,6 +239,15 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   covers it is the answer, and it took one short script to turn "the game is
   scanning the disc" into a filename. Re-take the census from a run that goes
   at least as far as the device will, and re-check staging at that same depth.
+- **Instruction-cache pressure is not what binds the recompiled code, and two
+  experiments say so.** 128-instruction chunks put every function at 8.4 KiB
+  against a 32 KiB L1I -- a quarter of the cache, where 1024 gives 57.0 KiB --
+  and `guest` time did not improve while the console got 6-7% slower overall,
+  because eight times more chunk boundaries means eight times more fall-through
+  dispatches (`disp` and `ios` both roughly double). `-marm` pushed the same
+  variable the other way, +19% `.text`, and came back flat. Do not re-propose an
+  optimisation on the grounds that it will help the I-cache without new evidence;
+  the two obvious ways of testing that claim have both come back null.
 - The Vita does not need the whole 3.2 GB extraction. The boot touches 25 MB of
   it; `GV_DISC_CENSUS` records exactly which files, and
   `scripts/stage-media-vita.sh` sends only those.

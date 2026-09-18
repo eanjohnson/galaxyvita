@@ -2,6 +2,59 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — Smaller chunks are 6-7% slower, and the I-cache hypothesis is dead
+
+The plan's third piece of verified evidence was that every chunk function is
+larger than the cache that must hold it: 57.0 KiB of Thumb per function against
+a 32 KiB L1I on the Cortex-A9. `docs/PLAN.md:167` had asked for that measurement
+and nobody had taken it. Taking it disproves the inference drawn from it.
+
+Dropping `DOLRECOMP_C_CHUNK_INSTRUCTIONS` from 1024 to 128 shrinks each function
+to 8.4 KiB -- comfortably resident, a quarter of the cache -- and the console
+gets **slower in all three windows**, by more than twice the noise floor:
+
+| retraces | 1024 | 128 | ratio |
+|---|---|---|---|
+| 400-800 | 3.75 VI/s | 3.54 VI/s | **0.944x** |
+| 800-1100 | 1.79 VI/s | 1.67 VI/s | **0.933x** |
+| 1100-1400 | 1.48 VI/s | 1.38 VI/s | **0.932x** |
+
+Consistent to half a percent across three windows whose absolute speeds differ
+by 2.7x, against a run-to-run noise floor of about 3%. This is a real result,
+and the phase split says exactly where it went:
+
+| phase, 1100-1400 | 1024 | 128 |
+|---|---|---|
+| dispatch | 12.2 s | **22.7 s** |
+| IOS service | 7.5 s | **12.7 s** |
+| guest code | 54.5 s | 56.2 s |
+| dispatches/s | 62.1k | 112.1k |
+
+Dispatch and IOS service are the two per-dispatch costs, and both roughly
+double, because eight times more chunk boundaries means eight times more places
+where straight-line guest code falls out of its function and back through the
+chassis. The cross-chunk direct call fixed `bl`/`blr`; it cannot fix fall-through
+across a boundary, and shrinking chunks manufactures those boundaries. This is
+precisely the 1.32x cross-chunk win being spent in reverse.
+
+**The number that matters is `guest`, and it did not improve.** Making every hot
+function fit in L1I with room to spare bought 0% -- if anything 3% the wrong way.
+Taken with `-marm`, which carried 19% more `.text` for a flat result, two
+experiments pushing instruction-cache pressure hard in opposite directions both
+came back null. Instruction-cache pressure is not what binds the recompiled
+code. The plan's item 2 assumed it was; that assumption is now retired, and any
+future "this will help the I-cache" argument needs new evidence, not this one.
+
+So the sweep does not continue downwards -- 512 and 256 sit on a monotonic line
+between a known-worse point and a known-better one, and would cost two hours to
+confirm a trend already visible. The untested direction is *upwards*: DolRecomp's
+own default is 4096, four times what this project inherited from GalaxyPad and
+never questioned. Fewer boundaries is the axis the data actually points along.
+
+Sizes, for the record: 10,564 chunks against 1,322, `.text` 86.95 MiB against
+73.63 MiB (+18.1%), ELF 111,786,736 B against 95,350,100 B. More code, more
+dispatches, less speed.
+
 ## 2026-09-18 — Chunk size changes the timing quantum, and the gate caught it
 
 The 128-instruction scout failed host equivalence: FIFO writes, GX commands and
