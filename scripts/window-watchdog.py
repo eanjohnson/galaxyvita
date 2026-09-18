@@ -15,7 +15,11 @@ seven times more guest code per frame. VI retraces are the emulated machine's
 own clock and are the only number here worth comparing across phases; blocks/s
 is printed alongside only so the disagreement stays visible.
 
-Usage: window-watchdog.py <t_from> <t_to> <watchdog.log>...
+Each phase is reported twice: as a share of the window, and as seconds of it.
+The seconds line is the one to compare across runs -- shares are taken against
+different wall clocks and do not subtract.
+
+Usage: window-watchdog.py [--vi] <from> <to> <watchdog.log>...
 """
 import re, sys
 
@@ -102,6 +106,13 @@ def show(path, lo, hi, by_vi=False):
           f"({vis/59.94*100:4.1f}% of real time)  frames={d['frames']:4d}  "
           f"blocks/s={d['hits']/dt/1000:7.1f}k")
     print("               " + "  ".join(f"{k}={d[k]/tot*100:4.1f}%" for k in PH))
+    # Shares belong to different wall clocks between two runs, so they do not
+    # subtract: a phase can hold a larger share of a shorter run while costing
+    # fewer seconds. Seconds do subtract, and they are what "where did the time
+    # go" actually means. Every A/B in this project has had to do this
+    # conversion by hand, and getting it wrong is how a graphics phase once
+    # looked like it had grown when it had halved.
+    print("               " + "  ".join(f"{k}={d[k]/tot*dt:5.1f}s" for k in PH))
 
 if __name__ == '__main__':
     args = sys.argv[1:]
