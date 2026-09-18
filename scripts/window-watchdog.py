@@ -68,6 +68,16 @@ def window_by_vi(ts, lo, hi):
     b = min(ts, key=lambda x: abs(x['vi'] - hi))
     if b['vi'] <= a['vi'] or b['t'] <= a['t']:
         return None
+    # Refuse a window the log does not actually cover. min() over the nearest
+    # tick silently clamps to the last one when the run has not got that far,
+    # and then two runs get compared over different spans of game -- which is
+    # the very error matching on retraces exists to prevent, reintroduced by
+    # the matching itself. The watchdog ticks every two seconds, so a few
+    # retraces of slack is the sampling grid and anything more is a miss.
+    span = hi - lo
+    slack = max(8, span // 20)
+    if abs(a['vi'] - lo) > slack or abs(b['vi'] - hi) > slack:
+        return None
     dt = b['t'] - a['t']
     d = {k: b.get(k, 0) - a.get(k, 0) for k in PH + ['samples', 'vi', 'hits', 'frames']}
     tot = sum(d[k] for k in PH) or 1
