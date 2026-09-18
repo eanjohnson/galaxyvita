@@ -228,6 +228,15 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   (25% of samples dropped by 667k), so the PC ranking needs more slots before a
   long-run ranking means anything; the phase histogram is a plain array and is
   fine.
+- **A truncated counter reads as a small counter.** The watchdog wrote the gxm
+  report into a 352-byte buffer and `snprintf` cut the line at `dblend=`, so
+  every field after it -- including four counters added specifically to measure
+  a change -- was absent from every tick but the first dozen, with nothing to
+  mark that anything had been dropped. Read off the last line of a long run,
+  those counters looked like zero, which is precisely the answer that says the
+  change under test did nothing; the last tick that still fit said 27 of 40. If
+  a counter you just added reads zero, check that the line it lives on is
+  complete before believing it.
 - **A log line asserting something nobody measured is worse than no log line.**
   `main.c` printed `clock: PSVshellPlus user-controlled` for weeks. Nothing set
   a clock, `ScePower_stub` was not even linked, and the console was running at

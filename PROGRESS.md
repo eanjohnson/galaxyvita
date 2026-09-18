@@ -2,6 +2,46 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — Per-draw state dedupe: it works, and the GPU eats the saving
+
+`on_prim_end` re-issued the viewport, the texture bind, the four alpha uniforms
+and the vertex stream on every primitive; only the fragment program and the
+depth state were ever deduped. At 8.5M draws that looked like the obvious next
+target after vertex decode.
+
+The change is correct and it does remove calls -- the last watchdog tick whose
+line was not truncated showed 27 of 40 viewports already skipped -- and eight
+device frames came back byte-identical, which is the only gate available for a
+file the host does not build. But it buys **nothing measurable**:
+
+| retraces | before | after | |
+|---|---|---|---|
+| 400-800 | 9.33 VI/s | 9.38 VI/s | 1.005x |
+| 800-1100 | 2.62 VI/s | 2.64 VI/s | 1.008x |
+| 1100-1400 | 2.20 VI/s | 2.20 VI/s | 1.000x |
+
+What did move is where the time sits. At 1100-1400, `gxsub` falls 16.3s to
+11.9s and `gxcopy` rises 5.5s to 9.8s -- and their sum is 21.8s against 21.7s.
+The saving did not disappear into noise; it reappeared, almost to the second,
+at the other end of the frame.
+
+`gxcopy` wraps the copy-to-XFB callback, and that is `present()`: end scene,
+then **`gxm_finish()`**, a full wait for the GPU. So the reading is that the
+GPU is now the limiter in this window. Submitting faster does not finish the
+frame sooner; it only changes whether the CPU is inside `sceGxmDraw` or inside
+the wait when the GPU is the thing being waited for.
+
+That is a real change of situation. PLAN.md deferred removing the per-frame
+`gxm_finish()` on the grounds that a full sync costs nothing at 1.1 presents a
+second, which was true when it was written. It is not true now. The next
+experiment is that sync, and it also settles this reading: if the GPU is the
+limiter, removing the wait moves VI/s and nothing else will.
+
+The dedupe stays. It is pixel-identical, it removes work that is genuinely
+redundant, and it is worth having the moment the CPU is on the critical path
+again -- it is simply the right change at a moment when the CPU is not what
+binds.
+
 ## 2026-09-18 — The vertex layout, worked out once a draw instead of once a vertex
 
 Removing the libm call took a third of vertex decode and left ~913 cycles a
