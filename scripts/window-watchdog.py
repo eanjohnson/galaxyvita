@@ -54,13 +54,34 @@ def window(ts, lo, hi):
     tot = sum(d[k] for k in PH) or 1
     return a['t'], b['t'], dt, d, tot
 
-def show(path, lo, hi):
+def window_by_vi(ts, lo, hi):
+    """Window between two retrace counts rather than two wall-clock times.
+
+    Two runs of the same boot do not reach the same place at the same second --
+    that is the whole point of making one of them faster -- so comparing them
+    at matched wall clock compares different parts of the game. It shows up as
+    guest cost per frame differing between the runs, which cannot be caused by
+    anything on the host side. Retraces are the guest's own clock, so matching
+    on them compares the same stretch of game in both. It is the same
+    correction as GV_RETRACE_CAP on the host harness."""
+    a = min(ts, key=lambda x: abs(x['vi'] - lo))
+    b = min(ts, key=lambda x: abs(x['vi'] - hi))
+    if b['vi'] <= a['vi'] or b['t'] <= a['t']:
+        return None
+    dt = b['t'] - a['t']
+    d = {k: b.get(k, 0) - a.get(k, 0) for k in PH + ['samples', 'vi', 'hits', 'frames']}
+    tot = sum(d[k] for k in PH) or 1
+    return a['t'], b['t'], dt, d, tot
+
+
+def show(path, lo, hi, by_vi=False):
     ts = ticks(path)
     if not ts:
         print(f"{path}: no complete ticks"); return
-    w = window(ts, lo, hi)
+    w = (window_by_vi if by_vi else window)(ts, lo, hi)
     if not w:
-        print(f"{path}: window {lo}-{hi}s not covered (log ends t={ts[-1]['t']}s)"); return
+        print(f"{path}: window {lo}-{hi} not covered "
+              f"(log ends t={ts[-1]['t']}s vi={ts[-1]['vi']})"); return
     t0, t1, dt, d, tot = w
     vis = d['vi'] / dt
     print(f"{path.split('/')[-1]:14} t={t0}->{t1}s  VI/s={vis:5.2f}  "
@@ -69,6 +90,11 @@ def show(path, lo, hi):
     print("               " + "  ".join(f"{k}={d[k]/tot*100:4.1f}%" for k in PH))
 
 if __name__ == '__main__':
-    lo, hi = int(sys.argv[1]), int(sys.argv[2])
-    for p in sys.argv[3:]:
-        show(p, lo, hi)
+    args = sys.argv[1:]
+    by_vi = False
+    if args and args[0] == '--vi':
+        by_vi = True
+        args = args[1:]
+    lo, hi = int(args[0]), int(args[1])
+    for p in args[2:]:
+        show(p, lo, hi, by_vi)
