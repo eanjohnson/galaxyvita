@@ -142,6 +142,17 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   contents. Upload before the first use, and where there is a choice, pick the
   encoding whose all-zero value is the harmless one.
 
+- **A device script called from inside another device script always fails.**
+  Every runner takes `flock -n` on `galaxyvita-device.lock`, and so does
+  `send-input-vita.sh` -- and a child that reopens the lock file gets its own
+  file description, so the parent's lock excludes it. It exits 1 without
+  writing anything, and a harness that redirects it to `/dev/null 2>&1` -- as
+  every ad-hoc runner in this project has -- turns that into silence. The runs
+  then use whatever `input.txt` was left on the card by the last script that
+  ran *outside* a lock, which is comparable between runs and is not what the
+  runner asked for. Send the input before taking the lock, or check the exit
+  status; do not discover this by wondering why a new input script had no
+  effect.
 - **The host profile does not describe the console, and a cumulative
   percentage does not describe a phase.** On the host, recompiled guest code is
   75% of time; on the device it is a quarter, and the largest single phase at
