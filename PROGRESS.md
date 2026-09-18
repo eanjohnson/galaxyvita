@@ -2,6 +2,61 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — The cross-chunk call is worth 1.32x on the console
+
+The dead direct-call path, wired up and flown. Both eboots built from the same
+host sources, same input script, compared at matched VI retraces.
+
+| retraces | baseline | cross-chunk | speedup |
+|---|---|---|---|
+| 100-400 | 82 s | 74 s | 1.11x |
+| 400-800 | 134 s | 110 s | 1.22x |
+| 800-1100 | 232 s | 176 s | **1.32x** |
+
+The baseline did not reach retrace 1400 inside its 700 s hold; the cross-chunk
+build did, which is the same result stated without a ratio.
+
+The phase split says it is the intended mechanism and not luck. At 800-1100:
+
+| | baseline | cross-chunk |
+|---|---|---|
+| disp (the chassis's own per-block work) | 18.2% | **7.0%** |
+| ios (serviced once per dispatch) | 11.1% | **4.2%** |
+| guest | 26.5% | 30.9% |
+| blocks/s | 211.0k | 68.8k |
+
+`disp` and `ios` are exactly the costs paid per dispatch, and both fall by
+roughly two thirds. `guest` holding steady is the check that both runs covered
+the same stretch of game rather than one of them getting somewhere easier.
+
+The gain grows with how heavy the phase is -- 1.11x at the title screen, 1.32x
+at file select -- which follows, since heavier phases run more guest code and
+therefore more subroutine calls.
+
+**The 28% of extra code did not eat it.** The cross-chunk eboot is 33.45 MB
+against 26.05 MB, because every direct call site emits a prototype, a call and
+a continuation check where it used to emit two stores and a return. Chunk
+functions were already about 47.6 KiB against a 32 KiB L1I, so this was the
+real risk and the reason the plan said to measure rather than predict. It was
+worth measuring and the answer was no.
+
+It is now the default in `generate-aot.sh`. DolRecomp's own default stays off:
+it is a general-purpose tool and direct calls are only safe for a runtime that
+has told it which addresses it intercepts.
+
+### What this moves to the front
+
+Graphics. At the deepest window the cross-chunk build spends **43.4%** in `gx`,
+because everything competing with it got cheaper. The 1.25x ceiling measured
+for the GXM backend earlier today was measured on the *baseline* and is now an
+underestimate of what graphics is worth.
+
+And the idle loop. Its share rises from 50.0% to 60.2% at 400-800 and 19.4% to
+25.8% at 800-1100 -- not because it got slower but because everything around it
+got faster. The idle skip was reverted today for having a failure mode nobody
+could explain; it is worth returning to, and still only with an explanation for
+the cliff rather than a constant tuned until the numbers look nice.
+
 ## 2026-09-18 — The emulator is CPU-clock-bound, and graphics is worth 1.25x at most
 
 Two device A/Bs, both matched on VI retraces rather than wall clock. That

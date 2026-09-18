@@ -40,7 +40,11 @@ export DOLRECOMP_C_CHUNK_INSTRUCTIONS="${DOLRECOMP_C_CHUNK_INSTRUCTIONS:-1024}"
 # patch-aot-hle.py below cannot help, since it only rewrites *local* gotos and
 # deliberately leaves the chunk entry switch alone. Point the emitter at the
 # hook header itself rather than a generated copy, so the two cannot drift.
-if [[ -n "${DOLRECOMP_C_CROSS_CHUNK_CALLS:-}" ]]; then
+# On by default since it was measured: 1.11x at the title screen rising to
+# 1.32x at file select, on the console, matched on VI retraces. Set it to 0 to
+# get the old return-to-chassis form back for a comparison.
+DOLRECOMP_C_CROSS_CHUNK_CALLS="${DOLRECOMP_C_CROSS_CHUNK_CALLS:-1}"
+if [[ "$DOLRECOMP_C_CROSS_CHUNK_CALLS" != "0" ]]; then
   export DOLRECOMP_C_CROSS_CHUNK_CALLS
   export DOLRECOMP_C_ESCAPE_ADDRS="${DOLRECOMP_C_ESCAPE_ADDRS:-$ROOT/runtime/hle_hooks.h}"
   echo "==> cross-chunk direct calls ON; escapes from $DOLRECOMP_C_ESCAPE_ADDRS"
