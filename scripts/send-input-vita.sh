@@ -20,13 +20,20 @@
 # the comment there). After that mirror, measured on the file-select screen
 # against the 960x544 display:
 #
-#   ir_x ~= 1.017 * screen_x + 18        512 is centre; larger x goes right
+#   ir_x ~= 0.590 * screen_x + 225       512 is centre; larger x goes right
 #   ir_y ~= 0.833 * screen_y + 224       384 is centre; below ~259 the game
 #                                        clamps the cursor to screen y=42
 #
-# So the centre of the screen is 512,384 and the pointer is usable roughly over
-# ir_x 110..900 and ir_y 259..677. The y scale is not the x scale; do not assume
-# one calibration covers both.
+# So the centre of the screen is 512,384, and ir_x 300..723 covers screen x
+# 128..845; outside that the cursor clamps to the edge. The y scale is not the
+# x scale; do not assume one calibration covers both.
+#
+# Measure these by reading the watchdog's "ir script=.. sent=.." line together
+# with the cursor, on one boot. Fitting cursor positions alone produced two
+# wrong answers: a slope through two clamped endpoints, and a sweep on a
+# different boot that came out with the opposite sign for reasons still not
+# understood. If a pointer result surprises you, check it against that line
+# before believing it, and do not compare sweeps taken across a restart.
 #
 # Frames are the video frame, 60 to the second. A release gap goes in between
 # consecutive presses automatically, because a button the game never sees
