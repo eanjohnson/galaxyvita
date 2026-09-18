@@ -244,6 +244,23 @@ typedef struct {
   unsigned uv_n;
   const GvTex *bound; /* what the context currently has on TEXUNIT0 */
 
+  /* The rest of what the context already holds. GX rewrites the viewport,
+   * rebinds the texture and re-uploads the alpha state between primitives far
+   * more often than it changes any of them, and at ~2.1M draws in a 146 s
+   * window those calls are the cost rather than the draws themselves. Each
+   * field below says what was last pushed; all of them are invalidated at the
+   * top of a scene, where clear_screen() moves the same state behind their
+   * backs, and the alpha and texture caches go again whenever the fragment
+   * program changes -- a new program takes its uniforms from a fresh default
+   * buffer. The skip counters are there so the next run says how much of this
+   * was redundant rather than leaving it to be assumed. */
+  float vp_set[6];
+  int vp_valid;
+  const void *stream_set;
+  u32 alpha_reg_set;
+  int alpha_tex_set, alpha_valid;
+  unsigned skip_vp, skip_tex, skip_alpha, skip_stream;
+
   Arena arena[ARENA_COUNT];
   int arena_index;
   unsigned vert_used, index_used;
@@ -650,10 +667,6 @@ static void set_alpha_uniforms_reg(int textured, u32 reg) {
   sceGxmSetUniformDataF(buf, g.u_op[i], 0, 4, op);
 }
 
-static void set_alpha_uniforms(int textured) {
-  set_alpha_uniforms_reg(textured, g.regs ? g.regs->bp[0xF3u] : 0u);
-}
-
 static void set_depth_state(u32 zmode) {
   SceGxmContext *const ctx = gxm_context();
   const unsigned test = zmode & 1u;
@@ -1001,6 +1014,9 @@ static void begin_scene_if_needed(void) {
    * pushed when it changes, so both caches start each scene empty. */
   g.prog_bound = g.fragment_program;
   g.depth_valid = 0;
+  g.vp_valid = 0;
+  g.stream_set = NULL;
+  g.alpha_valid = 0;
   set_alpha_uniforms_reg(0, GX_ALPHA_ALWAYS);
   sceGxmSetCullMode(ctx, SCE_GXM_CULL_NONE);
   clear_screen();
@@ -1156,17 +1172,27 @@ static void on_prim_end(void *user) {
     const GvTex *tex = bind_texture();
     const u32 bmode = g.regs ? g.regs->bp[0x41u] : 0u;
     const u32 zmode = g.regs ? g.regs->bp[0x40u] : 0u;
+    const u32 amode = g.regs ? g.regs->bp[0xF3u] : 0u;
     SceGxmFragmentProgram *const prog = frag_program(tex != NULL, bmode);
     if (prog != g.prog_bound) {
       sceGxmSetFragmentProgram(ctx, prog);
       g.prog_bound = prog;
+      g.alpha_valid = 0;
+      g.bound = NULL;
     }
-    g.bound = tex;
-    set_alpha_uniforms(tex != NULL);
+    if (!g.alpha_valid || amode != g.alpha_reg_set ||
+        (tex != NULL) != g.alpha_tex_set) {
+      set_alpha_uniforms_reg(tex != NULL, amode);
+      g.alpha_reg_set = amode;
+      g.alpha_tex_set = tex != NULL;
+      g.alpha_valid = 1;
+    } else {
+      g.skip_alpha++;
+    }
     set_depth_state(zmode);
     g.last_bmode = bmode;
     g.last_zmode = zmode;
-    g.last_amode = g.regs ? g.regs->bp[0xF3u] : 0u;
+    g.last_amode = amode;
     if (bmode & 1u)
       g.draws_blend++;
     if (!((bmode >> 3) & 1u))
@@ -1180,17 +1206,33 @@ static void on_prim_end(void *user) {
     else
       g.draws_tex_big++;
     if (tex) {
-      const int rc = sceGxmSetFragmentTexture(ctx, g.sampler_index, &tex->tex);
-      if (rc < 0)
-        g.set_tex_rc = rc;
+      if (tex != g.bound) {
+        const int rc = sceGxmSetFragmentTexture(ctx, g.sampler_index, &tex->tex);
+        if (rc < 0)
+          g.set_tex_rc = rc;
+      } else {
+        g.skip_tex++;
+      }
       g.last_tex_w = tex->w;
       g.last_tex_h = tex->h;
       g.textured_draws++;
     }
+    g.bound = tex;
   }
 
-  set_viewport_from(g.vp);
-  sceGxmSetVertexStream(ctx, 0, g.arena[g.arena_index].verts);
+  if (!g.vp_valid || memcmp(g.vp_set, g.vp, sizeof(g.vp_set)) != 0) {
+    set_viewport_from(g.vp);
+    memcpy(g.vp_set, g.vp, sizeof(g.vp_set));
+    g.vp_valid = 1;
+  } else {
+    g.skip_vp++;
+  }
+  if (g.arena[g.arena_index].verts != g.stream_set) {
+    sceGxmSetVertexStream(ctx, 0, g.arena[g.arena_index].verts);
+    g.stream_set = g.arena[g.arena_index].verts;
+  } else {
+    g.skip_stream++;
+  }
   sceGxmDraw(ctx, SCE_GXM_PRIMITIVE_TRIANGLES, SCE_GXM_INDEX_FORMAT_U32,
              &g.arena[g.arena_index].indices[first], count);
   g.draws++;
@@ -1308,6 +1350,9 @@ static void on_copy(void *user, u32 data) {
       g.scale = sx < sy ? sx : sy;
       g.offset_x = ((float)gxm_width() - (float)w * g.scale) * 0.5f;
       g.offset_y = ((float)gxm_height() - (float)h * g.scale) * 0.5f;
+      /* The cached viewport is the GX one, but what was pushed came through
+       * this scale and offset, so moving them invalidates it. */
+      g.vp_valid = 0;
     }
   }
   present();
@@ -1324,6 +1369,9 @@ void gx_gxm_flush_textures(void) {
   g.tex_decoded = 0;
   g.bound = NULL;
   g.prog_bound = NULL;
+  g.alpha_valid = 0;
+  g.vp_valid = 0;
+  g.stream_set = NULL;
   memset(g.tex, 0, sizeof(g.tex));
 }
 
@@ -1345,7 +1393,8 @@ void gx_gxm_report(char *out, unsigned n) {
            "dumped=%u snaps=%u tex=%u/%u arena=%uk miss_unmap=%u miss_fmt=%u "
            "miss_space=%u smp=%u fdbg=%u last=%dx%d fin=%dx%d dtiny=%u "
            "dbig=%u duntex=%u bm=%08x zm=%08x am=%08x fvar=%u frc=0x%08x "
-           "dblend=%u dnocol=%u datest=%u uv=[%.3f %.3f]-[%.3f %.3f]",
+           "dblend=%u dnocol=%u datest=%u skip=vp%u/tex%u/a%u/s%u "
+           "uv=[%.3f %.3f]-[%.3f %.3f]",
            g.frames, g.scenes, g.draws, g.verts, g.dropped_full,
            g.dropped_nomatrix, g.dropped_novp, g.dropped_unsupported,
            (double)g.scale, g.copy_w, g.copy_h, g.dumped, g.snaps,
@@ -1357,6 +1406,7 @@ void gx_gxm_report(char *out, unsigned n) {
            (unsigned)g.last_bmode, (unsigned)g.last_zmode,
            (unsigned)g.last_amode, g.frag_n, (unsigned)g.frag_rc,
            g.draws_blend, g.draws_nocolor, g.draws_atest,
+           g.skip_vp, g.skip_tex, g.skip_alpha, g.skip_stream,
            (double)g.uv_lo[0], (double)g.uv_lo[1], (double)g.uv_hi[0],
            (double)g.uv_hi[1]);
 }
