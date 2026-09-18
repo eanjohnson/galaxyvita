@@ -2,6 +2,47 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — The FIFO re-parse was not the cost either, and the skip counts land
+
+The guest writes the write-gather pipe four bytes at a time and `WriteBytes`
+ran `DecodeOne` over the buffer after every one, so a seven-vertex draw -- three
+bytes of header and about twenty a vertex -- was parsed, and its vertex size
+recomputed out of the VCD and VAT words, on each of some thirty-six writes
+before it was complete. `gx` is 20.0s of the 146s at retraces 1100-1400 against
+~19.6M FIFO writes, about 450 cycles a four-byte store, so this looked like most
+of it.
+
+`DecodeOne` now reports how many bytes the command will take and `WriteBytes`
+waits for that much. It passed the strict gate -- cycles, FIFO writes, GX
+commands, draws, vertices, unknown opcodes and bytes-left-buffered all
+identical at 1200 retraces, and 39 of 39 frames byte-identical. On hardware:
+
+| retraces | before | after | |
+|---|---|---|---|
+| 400-800 | 9.38 VI/s | 9.18 VI/s | 0.979x |
+| 800-1100 | 2.64 VI/s | 2.58 VI/s | 0.977x |
+| 1100-1400 | 2.20 VI/s | 2.20 VI/s | 1.000x |
+
+Nothing, and two of the three point slightly the wrong way inside the noise
+floor. `gx` moves 20.4s to 19.8s, which is half a second on a phase that also
+contains every BP, XF and CP register load and the display-list walk -- the
+re-parse was a small part of `gx`, not most of it. The 450-cycles-a-write
+figure was the whole phase divided by the write count, and that arithmetic
+assumed what it was trying to show.
+
+**The same run settled the other question.** With the report line no longer
+truncated, the skip counters read
+`skip=vp8542379/tex8459198/a8523538/s8542381` against 8,544,458 draws: the
+per-draw state dedupe is skipping **99.8% of viewport pushes, 99.0% of texture
+binds, 99.8% of alpha uploads and 99.97% of vertex-stream sets**. Essentially
+all of that state traffic is gone, it moved 4.4s out of `gxsub`, and the frame
+rate did not change. That is about as clean a statement as this project has
+that the CPU is no longer what the frame is waiting for.
+
+Both changes stay: each does strictly less work than what it replaced, each is
+pixel-identical, and each is worth exactly nothing until the GPU stops being
+the limiter. Which is the next measurement.
+
 ## 2026-09-18 — Per-draw state dedupe: it works, and the GPU eats the saving
 
 `on_prim_end` re-issued the viewport, the texture bind, the four alpha uniforms
