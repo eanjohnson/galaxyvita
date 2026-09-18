@@ -123,6 +123,16 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   sharing the card, ftpvita included. Stride 8 was enough to do it. Keep the
   product of count and frequency low; the useful frames are rarely so close
   together that it matters.
+- **`eboot.bin` is compressed, so its size is not code size.** The -marm
+  build's objects carry 19% more `.text` than the Thumb-2 build and its ELF is
+  13.9% bigger -- and its `eboot.bin` is 3.2 MB *smaller*, because ARM's
+  fixed-width encoding compresses 3.60x where dense Thumb-2 manages 2.85x. Read
+  across instruction sets, eboot size reports the opposite of the truth. It had
+  already been quoted in this project as a code-size proxy for the cross-chunk
+  change; that comparison happened to be Thumb against Thumb so the ratio was
+  roughly fair, but it was luck. Compare `arm-vita-eabi-size` on the objects,
+  or the ELF -- and for an I-cache argument only the uncompressed figure means
+  anything, since that is what the cache holds.
 - **`GV_AOT_TARGETS=vita` halves an AOT experiment and removes its gate.** The
   host objects are 42 of the 80 minutes and 250 MB, and a flag or arch sweep
   only ever asks "is this faster on the console" -- so skipping them is right
