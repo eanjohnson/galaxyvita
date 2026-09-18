@@ -2,6 +2,35 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — -O3 buys nothing, and the sweep is closed
+
+The AOT chunks build at `-O2` and it was never a decision -- the level was
+emergent from flag ordering, gcc taking the last `-O` it is given. So the level
+was swept rather than assumed.
+
+`-O3` is **bit-identical to `-O2` on every emulator-visible counter**: at a
+1200-retrace cap, cycles 14,597,079,739, FIFO writes 2,790,620, GX commands
+1,109,347, MMIO reads 84,266, disc reads 5,894, draws 6,315, vertices 25,260 and
+final PC 0x804ab358, all the same. That is the gate a pure `-O` change has to
+pass -- an optimisation level cannot move the timing quantum, so anything less
+than identity would have been a miscompile.
+
+On hardware it is not a result:
+
+| retraces | -O2 | -O3 | |
+|---|---|---|---|
+| 800-1100 | 2.58 VI/s | 2.49 VI/s | 0.965x |
+| 1100-1400 | 2.05 VI/s | 2.03 VI/s | 0.990x |
+
+Both deltas are inside the 3% noise floor, and both point the wrong way. The
+phase split says the same: `guest` gains a second (55.2s -> 54.2s, which is the
+only place more inlining could help) and `gx` and `ios` give it back (20.0 ->
+21.4s, 8.2 -> 9.4s) in code `-O3` compiled the same way. `.text` grows 73.63 MiB
+to 76.11 and the ELF 95.3 MB to 98.2 -- and the 4096-chunk experiment already
+showed that a bigger `.text` slows down code whose machine code did not change.
+
+**`-O2` stays**, now deliberately: `GV_AOT_OPT` defaults to it and says so.
+
 ## 2026-09-18 — A libm call per vertex component, and a third of vertex decode
 
 With idle gone, vertex loading was the largest graphics phase: 41.9s of the 158s
