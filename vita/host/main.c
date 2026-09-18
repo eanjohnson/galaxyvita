@@ -657,7 +657,13 @@ static int watchdog(SceSize args, void *argp) {
      * it lands in the one file that keeps being written when the app's own
      * logging has given up. */
     if (g_gfx_ready) {
-      char gbuf[352];
+      /* 352 silently cut the line at `dblend=`, and everything after that --
+       * the alpha-test count and the redundant-state skip counts -- was simply
+       * absent from every tick past the first dozen, with no marker to say so.
+       * A truncated counter reads as a small counter: the skip counts looked
+       * like zero, which is the answer that says a change did nothing. Size
+       * this for the whole line, with room to grow. */
+      char gbuf[640];
       int gn;
       gx_gxm_report(gbuf, sizeof(gbuf) - 2u);
       gn = (int)strlen(gbuf);
@@ -908,7 +914,7 @@ static int run_aot(SceSize args, void *argp) {
   }
 
   static Chassis ch;
-  char buf[352];
+  char buf[640]; /* wide enough for the whole gxm report; see gbuf above */
   if (!chassis_init(&ch, g_mem1, GC_MAIN_RAM_SIZE, g_mem2, WII_MEM2_SIZE,
                     chassis_log, NULL)) {
     log_line("chassis_init failed");
