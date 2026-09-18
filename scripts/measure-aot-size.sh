@@ -54,6 +54,27 @@ AOT_ARCH="${GV_AOT_ARCH:--mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard -mthumb}"
 AOT_EXTRA="${GV_AOT_EXTRA:--fno-strict-aliasing}"
 echo "==> AOT flags: $AOT_OPT $AOT_ARCH $AOT_EXTRA"
 
+# Which halves to build. Both by default, because the host objects are what
+# host equivalence runs against and skipping them silently is how a gate stops
+# being run.
+#
+# But a flag or arch sweep only ever asks "is this faster on the console", and
+# the host half of that answer is 42 of the 80 minutes and 250 MB for nothing.
+# GV_AOT_TARGETS=vita halves those experiments:
+#
+#   GV_AOT_TARGETS=vita GV_AOT_ARCH="... -marm" ./scripts/measure-aot-size.sh
+#
+# Note what that costs: with no host objects there is no host equivalence gate,
+# so a vita-only build can only be checked on the device, by the boot reaching
+# the same retraces. That is weaker evidence. Use it for flags that cannot
+# change behaviour, not for emitter changes that can.
+AOT_TARGETS="${GV_AOT_TARGETS:-both}"
+case "$AOT_TARGETS" in
+  both|host|vita) ;;
+  *) echo "GV_AOT_TARGETS must be both, host or vita (got '$AOT_TARGETS')" >&2; exit 1 ;;
+esac
+[[ "$AOT_TARGETS" == both ]] || echo "==> building $AOT_TARGETS objects only"
+
 # CMake glob at configure time; reconfigure after generate-aot.sh.
 cat > "$CMAKE_SRC/CMakeLists.txt" <<EOF
 cmake_minimum_required(VERSION 3.16)
@@ -78,15 +99,22 @@ sum_size() {
   '
 }
 
-echo "==> host objects"
-cmake -S "$CMAKE_SRC" -B "$HOST_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build "$HOST_BUILD" -j"$JOBS"
-mapfile -t HOST_OBJS < <(find "$HOST_BUILD" \( -name '*.o' -o -name '*.obj' \) \
-  ! -name 'CMakeCCompilerABI.*' ! -name 'CMakeCCompilerId.*' | sort)
-read -r HTEXT HDATA HBSS <<<"$(sum_size size "${HOST_OBJS[@]}")"
+HTEXT=0; HDATA=0; HBSS=0
+if [[ "$AOT_TARGETS" == vita ]]; then
+  echo "==> host objects skipped (GV_AOT_TARGETS=vita); host equivalence cannot run"
+else
+  echo "==> host objects"
+  cmake -S "$CMAKE_SRC" -B "$HOST_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release
+  cmake --build "$HOST_BUILD" -j"$JOBS"
+  mapfile -t HOST_OBJS < <(find "$HOST_BUILD" \( -name '*.o' -o -name '*.obj' \) \
+    ! -name 'CMakeCCompilerABI.*' ! -name 'CMakeCCompilerId.*' | sort)
+  read -r HTEXT HDATA HBSS <<<"$(sum_size size "${HOST_OBJS[@]}")"
+fi
 
 VTEXT=0; VDATA=0; VBSS=0
-if [[ -z "${VITASDK:-}" || ! -x "$VITASDK/bin/arm-vita-eabi-gcc" ]]; then
+if [[ "$AOT_TARGETS" == host ]]; then
+  echo "==> vita objects skipped (GV_AOT_TARGETS=host)"
+elif [[ -z "${VITASDK:-}" || ! -x "$VITASDK/bin/arm-vita-eabi-gcc" ]]; then
   echo "VITASDK missing; skip Vita cross-compile" >&2
 else
   echo "==> vita objects"
@@ -101,8 +129,37 @@ else
   STAMP="$VITA_BUILD/.gv-flags"
   WANT="$AOT_OPT $AOT_ARCH $AOT_EXTRA"
   if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$WANT" ]]; then
-    [[ -d "$VITA_BUILD" ]] && echo "==> AOT flags changed; rebuilding all objects"
+    # Park the current tree under its own flags rather than deleting it, and
+    # bring back the one for these flags if it has been built before.
+    #
+    # A sweep revisits the same flag sets constantly -- every variant is
+    # compared against the -O2/-mthumb baseline -- and rebuilding that baseline
+    # each time was 38 minutes of recompiling bytes we already had. Ninja skips
+    # what has not changed, but only if the tree still exists to skip against.
+    #
+    # The stamp lives INSIDE each parked tree, so a tree can only ever be
+    # restored under the flags it was built with. That is the whole safety
+    # argument: the thing this replaces existed to stop a mixed-flag tree being
+    # reported as one measurement, and parking must not reintroduce it.
+    PARK="$ROOT/generated/build/aot-vita-flags"
+    mkdir -p "$PARK"
+    key() { printf '%s' "$1" | md5sum | cut -c1-12; }
+    if [[ -f "$STAMP" ]]; then
+      OLD_KEY="$(key "$(cat "$STAMP")")"
+      rm -rf "${PARK:?}/$OLD_KEY"
+      mv "$VITA_BUILD" "$PARK/$OLD_KEY"
+      echo "==> parked the previous tree as $OLD_KEY ($(cat "$PARK/$OLD_KEY/.gv-flags"))"
+    fi
     rm -rf "$VITA_BUILD"
+    NEW_KEY="$(key "$WANT")"
+    if [[ -f "$PARK/$NEW_KEY/.gv-flags" && "$(cat "$PARK/$NEW_KEY/.gv-flags")" == "$WANT" ]]; then
+      mv "$PARK/$NEW_KEY" "$VITA_BUILD"
+      echo "==> restored a tree previously built with these flags; ninja will rebuild only what moved"
+    else
+      # Refuse a parked tree whose stamp disagrees rather than trusting the key.
+      rm -rf "${PARK:?}/$NEW_KEY"
+      echo "==> AOT flags changed and no tree exists for them; building all objects"
+    fi
   fi
   cmake -S "$CMAKE_SRC" -B "$VITA_BUILD" -G Ninja \
     -DCMAKE_BUILD_TYPE= \
@@ -115,23 +172,34 @@ else
   read -r VTEXT VDATA VBSS <<<"$(sum_size arm-vita-eabi-size "${VITA_OBJS[@]}")"
 fi
 
-python3 - "$REPORT" "$SRC_DIR" "$HTEXT" "$HDATA" "$HBSS" "$VTEXT" "$VDATA" "$VBSS" <<'PY'
+python3 - "$REPORT" "$SRC_DIR" "$HTEXT" "$HDATA" "$HBSS" "$VTEXT" "$VDATA" "$VBSS" "$AOT_TARGETS" <<'PY'
 import pathlib, sys
-report, src, htext, hdata, hbss, vtext, vdata, vbss = sys.argv[1:]
+report, src, htext, hdata, hbss, vtext, vdata, vbss, targets = sys.argv[1:]
 def fmt(n):
     n = int(n)
     return f"{n:12d} ({n/1024/1024:8.2f} MiB)"
-lines = [
-    f"source: {src}",
-    f"host  text={fmt(htext)}  data={fmt(hdata)}  bss={fmt(hbss)}  sum={fmt(int(htext)+int(hdata)+int(hbss))}",
-    f"vita  text={fmt(vtext)}  data={fmt(vdata)}  bss={fmt(vbss)}  sum={fmt(int(vtext)+int(vdata)+int(vbss))}",
-]
+built_host = targets in ("both", "host")
+built_vita = targets in ("both", "vita")
+lines = [f"source: {src}"]
+# A half that was not built says so. Reporting it as 0.00 MiB is the same
+# mistake as the clock line that claimed a frequency nobody had set: it reads
+# as a measurement and is the absence of one.
+lines.append(
+    f"host  text={fmt(htext)}  data={fmt(hdata)}  bss={fmt(hbss)}  sum={fmt(int(htext)+int(hdata)+int(hbss))}"
+    if built_host else "host  not built this run (GV_AOT_TARGETS=%s)" % targets)
+lines.append(
+    f"vita  text={fmt(vtext)}  data={fmt(vdata)}  bss={fmt(vbss)}  sum={fmt(int(vtext)+int(vdata)+int(vbss))}"
+    if built_vita else "vita  not built this run (GV_AOT_TARGETS=%s)" % targets)
 vt = int(vtext)
 gate = 280 * 1024 * 1024
-lines.append(
-    f"vita .text vs 280 MiB gate: {'PASS' if vt < gate else 'FAIL'} "
-    f"({vt/1024/1024:.2f} MiB). Runtime estimate is recorded separately."
-)
+if not built_vita or vt == 0:
+    # Never let the size gate PASS on an empty measurement.
+    lines.append("vita .text vs 280 MiB gate: NOT RUN (no Vita objects this run).")
+else:
+    lines.append(
+        f"vita .text vs 280 MiB gate: {'PASS' if vt < gate else 'FAIL'} "
+        f"({vt/1024/1024:.2f} MiB). Runtime estimate is recorded separately."
+    )
 text = "\n".join(lines) + "\n"
 pathlib.Path(report).write_text(text)
 print(text, end="")

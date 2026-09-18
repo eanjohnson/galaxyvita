@@ -123,6 +123,14 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   sharing the card, ftpvita included. Stride 8 was enough to do it. Keep the
   product of count and frequency low; the useful frames are rarely so close
   together that it matters.
+- **`GV_AOT_TARGETS=vita` halves an AOT experiment and removes its gate.** The
+  host objects are 42 of the 80 minutes and 250 MB, and a flag or arch sweep
+  only ever asks "is this faster on the console" -- so skipping them is right
+  for `-marm` or an `-O` sweep, which cannot change behaviour. It is wrong for
+  an emitter change, because with no host objects there is no host equivalence
+  run, and the only remaining check is the device boot reaching the same
+  retraces. That is much weaker evidence, and the difference is easy to forget
+  three experiments later. Say which gate a result passed when quoting it.
 - **A frame dump at the default stride is all opening flash.** `GV_GFX_EVERY`
   defaults to 1, so `GV_GFX_FRAMES=40` dumps frames 0 to 39 -- every one of
   them inside the game's white flash. Forty such frames compared byte-for-byte
