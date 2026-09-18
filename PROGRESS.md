@@ -2,6 +2,41 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — The vertex layout, worked out once a draw instead of once a vertex
+
+Removing the libm call took a third of vertex decode and left ~913 cycles a
+vertex. The next third was the same shape of mistake one level up: `Decode`
+re-derived every descriptor, format, count and component size for each vertex,
+and the texture format and fixed-point fraction for each *component* -- both
+eight-way switches over the three VAT words. All of it depends only on
+`vcd_low`, `vcd_high` and `g0/g1/g2`, which are read once at the top of the
+draw and which decoding a vertex cannot touch. At about seven vertices a draw,
+that is most of the work done over and over.
+
+`-fno-strict-aliasing` is what stops GCC hoisting it unaided: it cannot prove
+`cp[]` survives the writes into `output->vertices`. The flag is needed elsewhere
+and measured free, so the hoist is done by hand. The eight texture slots are
+resolved into a small array above the loop, and a slot the vertex format does
+not carry now costs one comparison instead of two switches and a call --
+`AttributeData` returns null for descriptor 0 by construction, so skipping it is
+exact rather than merely observed.
+
+| retraces | before | after | | vertex load |
+|---|---|---|---|---|
+| 400-800 | 9.52 VI/s | 9.33 VI/s | 0.980x | 0.3s -> 0.3s |
+| 800-1100 | 2.58 VI/s | 2.62 VI/s | 1.016x | 12.9s -> 8.5s |
+| 1100-1400 | 2.05 VI/s | 2.20 VI/s | **1.073x** | 29.2s -> 19.6s |
+
+Vertex decode falls another 33%, to about **610 cycles a vertex**, and the
+1100-1400 window shrinks 146s to 136s with every other phase inside half a
+second. The early window is correctly flat: it has 0.3s of vertex loading to
+win, and 0.980x is inside the noise floor. Gate: host equivalence at 1200
+retraces -- cycles, FIFO writes, GX commands, draws, vertices and retraces all
+unchanged -- and 39 of 39 dumped frames byte-identical at stride 30.
+
+Vertex load has now gone 41.9s -> 29.2s -> 19.6s in that window across two
+changes, neither of which touched a line of the emitted guest code.
+
 ## 2026-09-18 — -O3 buys nothing, and the sweep is closed
 
 The AOT chunks build at `-O2` and it was never a decision -- the level was
