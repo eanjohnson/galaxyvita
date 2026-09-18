@@ -63,6 +63,11 @@ typedef struct Disc {
   /* Bumped on every entry's first read; see DiscEntry::first_seen. */
   u32 seq;
   u64 bytes;
+  /* The offset and length of the most recent read. A guest streaming a large
+   * file and a guest re-reading the same block forever produce the same read
+   * count from outside; the offset is what separates progress from a loop. */
+  u64 last_off;
+  u32 last_len;
   int opened;
 } Disc;
 

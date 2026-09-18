@@ -299,6 +299,8 @@ static int disc_read_inner(Disc *d, u64 offset, u32 len, u8 *dst) {
   memset(dst, 0, len);
   d->reads++;
   d->bytes += len;
+  d->last_off = offset;
+  d->last_len = len;
   if (d->trace) {
     fprintf(stderr, "discread #%u off=0x%llx len=%u ->", d->reads,
             (unsigned long long)offset, len);
@@ -383,6 +385,8 @@ int disc_read_raw(Disc *d, u64 offset, u32 len, u8 *dst) {
   memcpy(dst, d->sysarea + offset, (size_t)(end - offset));
   d->reads++;
   d->bytes += len;
+  d->last_off = offset;
+  d->last_len = len;
   return end == offset + len;
 }
 

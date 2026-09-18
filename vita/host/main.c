@@ -641,7 +641,7 @@ static int watchdog(SceSize args, void *argp) {
      * in one, and the edge counts per source are what tell the two apart.
      * Every tick, because the rate is the whole point. */
     {
-      char ibuf[192];
+      char ibuf[384];
       int in;
       in = snprintf(ibuf, sizeof(ibuf) - 2u,
                     "irq ai=%u dsp=%u vi=%u petok=%u pefin=%u ipc=%u "
@@ -654,6 +654,13 @@ static int watchdog(SceSize args, void *argp) {
                     ch->ios.stuck_pumps, ch->ios.stuck_worst,
                     ch->ios.stuck_cmd, ch->ios.stuck_fd,
                     (int)ch->ios.stuck_ret);
+      if (in > 0)
+        in += snprintf(ibuf + in, sizeof(ibuf) - (size_t)in - 2u,
+                       "disc reads=%u miss=%u mb=%u off=0x%llx len=%u\n",
+                       ch->disc.reads, ch->disc.misses,
+                       (unsigned)(ch->disc.bytes >> 20),
+                       (unsigned long long)ch->disc.last_off,
+                       ch->disc.last_len);
       if (in > 0)
         sceIoWrite(fd, ibuf, (SceSize)in);
     }
