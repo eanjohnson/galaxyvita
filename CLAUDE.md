@@ -139,6 +139,21 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   contents. Upload before the first use, and where there is a choice, pick the
   encoding whose all-zero value is the harmless one.
 
+- **A census only covers as far as its run got.** `scripts/check-staging.sh`
+  compares the staged subset against the full extraction and will say "ok"
+  while the census is still missing every file the game has not asked for
+  yet -- because at that block count neither tree asks for them either. The
+  census that boots to the strap screen names 275 files; the one driven to the
+  file-select screen names 276, and the extra one is a 7 MB AST music stream.
+  Without it the device ran to frame 1057 and stopped, with the disc doing
+  ~330 reads a second that all missed while megabytes transferred stayed flat.
+  That reads like a scan for something that is not there and is nothing of the
+  kind: it is ordinary streaming playback walking forward through a file the
+  card does not have, ~210 KB per watchdog tick. Map the offset back through
+  the FST before theorising -- `w1 << 2` is the disc offset, the entry that
+  covers it is the answer, and it took one short script to turn "the game is
+  scanning the disc" into a filename. Re-take the census from a run that goes
+  at least as far as the device will, and re-check staging at that same depth.
 - The Vita does not need the whole 3.2 GB extraction. The boot touches 25 MB of
   it; `GV_DISC_CENSUS` records exactly which files, and
   `scripts/stage-media-vita.sh` sends only those.
