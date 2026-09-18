@@ -123,6 +123,24 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   sharing the card, ftpvita included. Stride 8 was enough to do it. Keep the
   product of count and frequency low; the useful frames are rarely so close
   together that it matters.
+- **The timebase advances at dispatch boundaries, so chunk size changes what
+  the emulator does.** Shrinking chunks from 1024 to 128 instructions makes the
+  timing quantum 8x finer, and guest MMIO polling loops then spin a different
+  number of times before the condition they wait on flips -- so FIFO writes, GX
+  commands and MMIO counts all shift by ~0.2% at a matched retrace count. That
+  is not a miscompile: it is bounded, it does not accumulate over a 60x range
+  of run lengths, and its direction varies by phase, where real divergence
+  would grow and never heal. Host equivalence for a chunk-size change must
+  therefore gate on retraces, disc reads and the final PC -- and on the other
+  counters staying *bounded*, not identical. Gating on FIFO or GX fails every
+  variant by construction, exactly as gating on `hits` would.
+- **Before gating on a counter, ask whether the change under test can move it
+  legitimately.** Three separate measurements here were taken against a ruler
+  that moves with the thing being measured: a fixed block cap when the change
+  removed dispatches, matched wall clock when the change altered speed, and
+  host equivalence on FIFO writes when the change altered the timing quantum.
+  Each one produced a confident number that was wrong, and each was caught only
+  because something else refused to reconcile.
 - **Run-to-run noise on the device is about 3%, so nothing smaller is a
   result.** Two builds that were behaviourally identical -- bit-for-bit host
   equivalent, differing only by profiler byte stores -- measured 1.2% to 2.8%

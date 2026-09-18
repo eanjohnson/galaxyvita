@@ -2,6 +2,58 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — Chunk size changes the timing quantum, and the gate caught it
+
+The 128-instruction scout failed host equivalence: FIFO writes, GX commands and
+MMIO counts all moved by about 0.18% against the 1024-instruction build. The
+first thing that did not reconcile was arithmetic -- the two runs stopped 1,274
+cycles apart, and 5,110 extra FIFO writes cannot happen in 1,274 cycles. So it
+was not one run simply going further.
+
+Bracketing it across a 60x range of run lengths:
+
+| cap | fifo diff | gx diff | mmio_r diff |
+|---|---|---|---|
+| 20 | **0** | **0** | +624 |
+| 60 | +4,856 | +1,920 | +27 |
+| 150 | +4,628 | +1,848 | +27 |
+| 400 | +4,628 | +1,848 | +27 |
+| 1200 | +5,110 | +2,024 | +27 |
+
+**Bounded, non-accumulating, and the direction varies by phase.** At cap 20 the
+MMIO reads differ by 624 while FIFO and GX are byte-identical; by cap 60 the
+MMIO gap has collapsed to 27 and stays there while FIFO and GX take on a
+constant offset. A miscompiled instruction diverges progressively and does not
+heal. This does the opposite.
+
+The mechanism is the timebase. It advances at dispatch boundaries, so making
+chunks 8x smaller makes the timing quantum 8x finer, and a guest MMIO polling
+loop spins a different number of times before the condition it waits on flips.
+The guest sees the same sequence of states; it sees them after a different
+number of polls, and slightly more or less useful work lands between two
+retraces as a result.
+
+**So the gate was wrong for this experiment, in the same way `hits` would have
+been.** `hits` was excluded up front as a count of host dispatches -- the very
+thing the experiment changes. FIFO writes and GX commands are quantum-dependent
+too once the quantum is the variable, and gating on them fails every chunk-size
+variant by construction. The invariants that actually hold are the ones that
+survived: retraces (1200 = 1200), disc reads (5894 = 5894), the final PC, and
+the requirement that everything else stay bounded rather than accumulate.
+
+This is the third time tonight a measurement has been taken against a ruler
+that moves with the change being measured -- after the block cap and the
+wall-clock match. The pattern worth carrying: before gating on a counter, ask
+whether the change under test can move it for a legitimate reason.
+
+**It also bounds the confound for the performance question.** 1200 retraces of
+the 128-chunk build represent about 0.2% more guest work than 1200 retraces of
+the 1024-chunk build, so a retrace-matched VI/s comparison between chunk sizes
+is biased by 0.2% -- an order of magnitude under the ~3% noise floor, and
+therefore ignorable for a result that has to clear 3% to mean anything.
+
+Sizes, at 10,564 chunks against 1,322: to be recorded with the device result.
+
 ## 2026-09-18 — -marm is not better, and the noise floor is about 3%
 
 ### The measurement that calibrates the others
