@@ -239,6 +239,19 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   covers it is the answer, and it took one short script to turn "the game is
   scanning the disc" into a filename. Re-take the census from a run that goes
   at least as far as the device will, and re-check staging at that same depth.
+- **The host harness resolves its media paths against the current directory,
+  and missing media is a warning on stderr rather than an error.**
+  `aot_chassis.c` defaults `game` to `generated/extracted/game` and `nand` to
+  `generated/nand`, both relative, and `chassis_attach_media` failing only
+  prints `warning: media attach incomplete`. Run it from a tree without the
+  NAND and the boot still reaches the same retrace with the same FIFO writes,
+  GX commands and disc reads -- but 8% fewer dispatches and 43% fewer MMIO
+  reads, because the guest takes different paths through IOS. That reads
+  exactly like a real behavioural difference in whatever change is under test,
+  and it cost an hour of hunting a phantom bug in an idle-skip patch that
+  turned out to be provably inert. If two trees that should agree do not,
+  check `warning:` on stderr before reading anything into the counters -- and
+  when comparing trees, prove the unpatched copy reproduces the original first.
 - **Instruction-cache pressure is not what binds the recompiled code, and two
   experiments say so.** 128-instruction chunks put every function at 8.4 KiB
   against a 32 KiB L1I -- a quarter of the cache, where 1024 gives 57.0 KiB --
