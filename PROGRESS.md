@@ -2,6 +2,61 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — 4096-instruction chunks: a real win early, paid back later
+
+The other end of the chunk-size sweep, and the one the 128 result pointed at:
+if fall-through across chunk boundaries is what costs, then fewer boundaries
+should pay. DolRecomp's own default is 4096; this project inherited 1024 from
+GalaxyPad and never questioned it. 331 chunks against 1322, `.text` 77.22 MiB
+against 73.63, and **238.2 KiB per function against a 32 KiB L1I** -- seven
+times the cache, where 128 gave a quarter of it.
+
+Host equivalence held better than at 128: FIFO writes and GX commands
+*identical*, mmio_r -0.025%, cycles +4,130 in 14.6 billion, retraces, disc reads
+and final PC exact. Dispatches fell 6,501,763 -> 5,031,004, down 22.6%. That
+1024 barely perturbs the quantum where 128 moved it 0.18% is itself
+confirmation of the mechanism: at 1024 boundary fall-through was already rare
+enough not to set the timing quantum, and 128 is what made it frequent.
+
+On the console, against the idle-fold build, both pre-ldexp:
+
+| retraces | 1024 | 4096 | |
+|---|---|---|---|
+| 400-800 | 9.62 VI/s | 10.69 VI/s | **1.111x** |
+| 800-1100 | 2.46 VI/s | 2.50 VI/s | 1.016x |
+| 1100-1400 | 1.89 VI/s | 1.86 VI/s | 0.984x |
+
+Only the first is outside the 3% noise floor, and its mechanism is exact:
+dispatch 5.1s -> 2.0s and IOS service 3.7s -> 1.5s, 5.3s out of a 42s window,
+with dispatches down 2.4x. That window is dispatch-bound -- disp and ios are 21%
+of it between them -- so removing boundaries is worth a ninth of the wall clock.
+
+The later windows are where it is paid back. At 1100-1400 the same savings
+appear, dispatch -0.9s and IOS -1.7s, and are outweighed: guest +3.7s, vertex
+load +1.4s, submit +1.1s. **Vertex load and submit are ModernGekko C++ whose
+machine code is byte-for-byte the same in both builds** -- the ldexp fix landed
+at 17:15, after this build finished at 17:14:39, so neither carries it. Code
+that did not change cannot get slower except through what surrounds it. A 77 MiB
+`.text` in 238 KiB functions evidently pushes on everything sharing the memory
+system, including code that is not being recompiled at all.
+
+Individually those phase deltas are near the noise floor and are offered as the
+shape of an explanation, not as measurements: what is solid is the 1.111x early
+and the absence of a win later.
+
+So the cache story is not "instruction-cache pressure does not matter", which is
+how the 128 and -marm nulls read on their own. It is that the cache effect is
+not the one the plan predicted. Whether a chunk function fits in L1I is
+irrelevant -- 8.4 KiB and 238 KiB both fail to help. What does show up is total
+footprint pressure on other code, and it only becomes visible at the extreme.
+
+**1024 stays.** 4096 wins the window that is already fastest, at 10.69 VI/s and
+17.8% of real time, and does nothing for the windows where the game is actually
+unplayable at 1.86. A middle value might beat both, but the effects being
+argued over are 1-2% in the windows that matter and each point costs two hours
+of build, which is not a trade worth making while phases costing 40s a window
+are still on the table.
+
 ## 2026-09-18 — The idle wait was 60% of the console, and it constant-folds
 
 The chassis has recognised `OS_IDLE_WAIT` since the profiler landed and used it
