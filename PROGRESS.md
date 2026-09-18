@@ -2,6 +2,58 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — A libm call per vertex component, and a third of vertex decode
+
+With idle gone, vertex loading was the largest graphics phase: 41.9s of the 158s
+at retraces 1100-1400. Dividing by the vertex counts the watchdog already
+reports gives about **1,300 cycles a vertex**, and it held at 1,342 / 1,178 /
+1,310 across three windows whose vertex counts differ by a hundredfold -- 408,
+22,308 and 47,511 vertices a frame. A stable per-vertex cost that large is not
+reading thirty-odd bytes of attributes; it is something called per vertex.
+
+`GxVertexLoader::ReadComponent` opened with
+
+    const float scale = std::ldexp(1.0f, -static_cast<int>(fraction));
+
+`std::ldexp` is a libm call. Compiled for this console it is literally
+`bl ldexpf`, confirmed by putting the function through the Vita toolchain and
+reading the assembly. It ran once per **component**, so a vertex carrying a
+position, a normal and a few texture coordinates paid for a dozen of them.
+
+Every fraction reaching it comes from a five-bit CP field, so it is 0..31 and
+2^-fraction is exactly representable as an IEEE-754 exponent. Replacing the call
+with `bit_cast<float>((127u - fraction) << 23)` gives nine instructions, no call,
+and the identical bit pattern -- checked for all 32 values. The float case is
+fixed as a side effect: it never used `scale` but paid for it anyway, because a
+call that can set errno cannot be optimised away, while arithmetic folds out.
+
+| retraces | with ldexpf | without | | vertex load |
+|---|---|---|---|---|
+| 400-800 | 9.62 VI/s | 9.52 VI/s | 0.990x | 0.5s -> 0.3s |
+| 800-1100 | 2.46 VI/s | 2.58 VI/s | **1.049x** | 18.0s -> 12.9s |
+| 1100-1400 | 1.89 VI/s | 2.05 VI/s | **1.085x** | 41.9s -> 29.2s |
+
+Vertex decode falls 30%, everything else holds within a second, and the early
+window correctly shows nothing because it has only 0.5s of vertex loading to
+win. Gate: 39 of 39 dumped frames byte-identical at stride 30, 36 carrying real
+geometry, with cycles, FIFO writes, GX commands and vertex count unchanged --
+the values are the same bits, so the pixels have to be.
+
+**It is a third of the cost, not most of it.** Vertex decode is still the largest
+graphics phase at 29.2s, now about 913 cycles a vertex, which is still far more
+than the work justifies. What is left to look at, in the order the code suggests:
+`GxVertex` is ~132 bytes and fully value-initialised, so every vertex zero-fills
+it before overwriting and then copies it into the vector; the format descriptors
+are re-derived per vertex from `cp[]` through fifteen `Bits`/`FormatSize` call
+sites that are loop-invariant per draw, which `-fno-strict-aliasing` may well be
+preventing GCC from hoisting; and the texture-coordinate path loops over all
+eight slots per vertex whatever the format actually uses.
+
+Worth noting the search that found this cost nothing: the whole graphics stack
+has exactly one libm call in it, and this was it. Divisions in the per-draw
+paths were already written as reciprocal multiplies. It is an isolated defect,
+not a pattern.
+
 ## 2026-09-18 — 4096-instruction chunks: a real win early, paid back later
 
 The other end of the chunk-size sweep, and the one the 128 result pointed at:
