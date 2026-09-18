@@ -2,6 +2,65 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — Vertex loading is 23% of the console, and strict aliasing is worth nothing
+
+### What was inside `gx`
+
+The phase split, flown. VI/s matches the build it was taken against -- 3.71 vs
+3.61, 1.72 vs 1.70, 1.40 vs 1.38 -- so the instrument costs nothing and its
+shares can be read straight. The four new phases sum to within a point of the
+single `gx` they replaced.
+
+At retraces 1100-1400, the slow end:
+
+| phase | share | what it is |
+|---|---|---|
+| **gxvtx** | **23.1%** | `GxVertexLoader::Decode` and the per-draw vectors |
+| gx | 11.1% | command parse |
+| gxsub | 7.6% | `sceGxmDraw` and the state re-issued per draw |
+| gxcopy | 2.7% | EFB copy and present |
+
+**This agrees with the nogfx arithmetic taken a different way.** That method put
+decode at 31.6% and the sink at 11.8%; the direct measurement says 34.2% and
+10.3%. Two unrelated methods within two points of each other is the strongest
+evidence here, and it means the ranking can be trusted:
+
+| | share at 1100-1400 |
+|---|---|
+| guest (recompiled code) | 25.5% |
+| **vertex load** | **23.1%** |
+| idle | 20.0% |
+| gx command parse | 11.1% |
+| gxsub | 7.6% |
+| disp | 6.0% |
+| ios | 4.0% |
+
+Vertex loading is the largest single cost in the emulator after recompiled
+guest code itself. The plan did not target it, and ranked `sceGxmDraw` batching
+first -- which lives in the 7.6%.
+
+The shares move with what is on screen, and the direction is the check on all
+of it: at retraces 400-800, with almost no geometry, `gxcopy` is 11.3% and
+`gxvtx` is 0.7%. Present costs the same every frame; vertex loading does not.
+
+### `-fno-strict-aliasing` costs nothing, so it stays
+
+Rebuilt the AOT objects with strict aliasing on, having already shown host
+equivalence bit-for-bit at 1200 retraces. On the console:
+
+| retraces | -fno-strict-aliasing | strict aliasing |
+|---|---|---|
+| 400-800 | 3.61 VI/s | 3.61 VI/s |
+| 800-1100 | 1.70 VI/s | 1.68 VI/s |
+| 1100-1400 | 1.38 VI/s | 1.36 VI/s |
+
+Flat, fractionally negative, every phase share within a few tenths, and the run
+reached t=722s so nothing was miscompiled. The reasoning for trying it was
+sound -- with aliasing off, a guest store through the `u8*` RAM pointer forces
+GCC to reload `ctx->gpr[]`, in code that stores constantly -- and 2.4% more code
+bought exactly zero. **Keep the flag**: it is the safer of the two and costs
+nothing. Recorded so nobody spends the hour again.
+
 ## 2026-09-18 — Graphics is worth 1.14x, and two thirds of it is decode
 
 Two results from the same night, both taken on the cross-chunk build at full
