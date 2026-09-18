@@ -7,16 +7,22 @@ CAP="${2:-50000}"
 OUT="$ROOT/generated/build/host-chassis"
 mkdir -p "$OUT"
 
-mapfile -t OBJS < <(find "$ROOT/generated/build/aot-host" \( -name '*.o' -o -name '*.obj' \) \
+# Which tree of AOT objects to link. Overridable so two recompiler variants can
+# be compared without either of them clobbering the other's objects -- the
+# globbed default has no dependency edge back to the C it came from, which is
+# how a stale object once passed for a host/Vita divergence.
+AOT_HOST_DIR="${GV_AOT_HOST_DIR:-$ROOT/generated/build/aot-host}"
+mapfile -t OBJS < <(find "$AOT_HOST_DIR" \( -name '*.o' -o -name '*.obj' \) \
   ! -name 'CMakeCCompilerABI.*' ! -name 'CMakeCCompilerId.*' | sort)
 if [[ ${#OBJS[@]} -eq 0 ]]; then
-  echo "no host AOT objects — run ./scripts/measure-aot-size.sh first" >&2
+  echo "no host AOT objects in $AOT_HOST_DIR — run ./scripts/measure-aot-size.sh first" >&2
   exit 1
 fi
 
 MG="$ROOT/third_party/ModernGekko"
+GEN_DIR="${GV_AOT_GEN_DIR:-$ROOT/generated/aot/generated}"
 CINC=(-I"$ROOT/runtime" -I"$ROOT/tests/host" -I"$ROOT/third_party/DolRecomp/src"
-      -I"$ROOT/generated/aot/generated")
+      -I"$GEN_DIR")
 # The command processor is ModernGekko's, so the chassis is a mixed C/C++ link
 # now: C sources stay on gcc, the GPU stack builds with g++, and g++ links.
 CXXINC=("${CINC[@]}" -I"$MG/include" -I"$MG/vendor/dolphin_legacy"

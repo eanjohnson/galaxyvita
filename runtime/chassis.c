@@ -1265,6 +1265,10 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
   u32 prev_pc = 0;
   int have_prev = 0;
   while (max_blocks == 0u || blocks < max_blocks) {
+    if (ch->retrace_cap && ch->flipper.retrace >= ch->retrace_cap) {
+      ch->stop_reason = CHASSIS_STOP_CAP;
+      return 1;
+    }
     u32 pc = ch->cpu.pc;
     if (have_prev && pc == prev_pc &&
         memcmp(ch->cpu.gpr, ch->spin_gpr, sizeof(ch->cpu.gpr)) == 0)

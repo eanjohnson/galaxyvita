@@ -32,6 +32,20 @@ JOBS="${DOLRECOMP_JOBS:-$(nproc)}"
 # keep 1024 so the Vita size number is comparable to that process.
 export DOLRECOMP_C_CHUNK_INSTRUCTIONS="${DOLRECOMP_C_CHUNK_INSTRUCTIONS:-1024}"
 
+# Cross-chunk direct calls are off in DolRecomp by default and stay off here
+# unless asked for, because they change what the chassis gets to see between
+# blocks. Turning them on requires telling the emitter which addresses the
+# chassis intercepts, or a bl to an HLE'd function in another chunk would enter
+# that chunk directly and run the guest code the hook exists to replace --
+# patch-aot-hle.py below cannot help, since it only rewrites *local* gotos and
+# deliberately leaves the chunk entry switch alone. Point the emitter at the
+# hook header itself rather than a generated copy, so the two cannot drift.
+if [[ -n "${DOLRECOMP_C_CROSS_CHUNK_CALLS:-}" ]]; then
+  export DOLRECOMP_C_CROSS_CHUNK_CALLS
+  export DOLRECOMP_C_ESCAPE_ADDRS="${DOLRECOMP_C_ESCAPE_ADDRS:-$ROOT/runtime/hle_hooks.h}"
+  echo "==> cross-chunk direct calls ON; escapes from $DOLRECOMP_C_ESCAPE_ADDRS"
+fi
+
 echo "==> dolrecomp $DOL $TITLE -> $OUT  (-j$JOBS chunk=$DOLRECOMP_C_CHUNK_INSTRUCTIONS)"
 "$DOLRECOMP" -j"$JOBS" --cpu broadway --backend c "$DOL" "$TITLE" "$OUT"
 echo "generated under $OUT"

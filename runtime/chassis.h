@@ -105,6 +105,16 @@ typedef struct Chassis {
    * mattered -- DCFlushRange falling through per cache line -- it was found by
    * accident in a hot-PC list. mftb is on the guest's own timing paths, so a
    * large count here is a real cost and not just a curiosity. */
+  /* Stop once the emulated VI has retraced this many times; 0 is off.
+   *
+   * A block cap counts *host dispatches*, which is the wrong ruler for any
+   * change that alters how much guest code one dispatch covers -- cross-chunk
+   * direct calls and idle skipping both do, so under a block cap they run the
+   * game further and every downstream counter moves for reasons that have
+   * nothing to do with correctness. Retraces are the guest's own clock, so
+   * stopping on one compares two builds at the same point in the game and
+   * FIFO bytes and GX commands then have to match exactly. */
+  u32 retrace_cap;
   u32 fb_mfspr;
   u32 fb_mtspr;
   u32 fb_mftb;

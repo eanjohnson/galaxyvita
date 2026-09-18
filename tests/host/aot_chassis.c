@@ -299,6 +299,14 @@ int main(int argc, char **argv) {
       sigaction(SIGTERM, &sa, NULL);
     }
   }
+  {
+    /* Stop at a point in the *game* rather than at a number of dispatches, so
+     * that a change which moves guest code per dispatch can still be compared
+     * against the build before it. */
+    const char *rc = getenv("GV_RETRACE_CAP");
+    if (rc && *rc)
+      ch.retrace_cap = (u32)strtoul(rc, NULL, 10);
+  }
   prof_start();
   if (!chassis_load_dol(&ch, dol))
     return 1;
