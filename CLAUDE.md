@@ -205,6 +205,16 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   runner asked for. Send the input before taking the lock, or check the exit
   status; do not discover this by wondering why a new input script had no
   effect.
+- **The host and the console do not run the same workload, so a host profile
+  cannot aim graphics work.** There is no input replay on the host, so it never
+  leaves the strap screen: at retrace 1400 a host run has 7,491 draws and 29,964
+  vertices where the console, replaying `input.txt` to the file select, has 3.02M
+  draws and 21.2M vertices by the same frame count. A 1 kHz sample of the host at
+  that point puts the entire ModernGekko GPU stack at 1.8% and does not rank
+  `GxVertexLoader::Decode` at all, while the device profiler says graphics is 49%
+  of the 1100-1400 window. Both are right about the run they measured. Use the
+  host for equivalence gates, which only need the two sides to do the same thing;
+  aim performance work with the device phase counters.
 - **The host profile does not describe the console, and a cumulative
   percentage does not describe a phase.** On the host, recompiled guest code is
   75% of time; on the device it is a quarter, and the largest single phase at
