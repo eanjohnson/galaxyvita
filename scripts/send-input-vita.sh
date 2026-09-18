@@ -15,6 +15,19 @@
 #   ./scripts/send-input-vita.sh up+a              two buttons at once
 #   ./scripts/send-input-vita.sh --ir 512,384 a    park the pointer first
 #
+# --ir takes the pointer in the Wii IR camera's own units, 0..1023 by 0..767,
+# and vita_pad mirrors x on the way in because the camera faces the player (see
+# the comment there). After that mirror, measured on the file-select screen
+# against the 960x544 display:
+#
+#   ir_x ~= 1.017 * screen_x + 18        512 is centre; larger x goes right
+#   ir_y ~= 0.833 * screen_y + 224       384 is centre; below ~259 the game
+#                                        clamps the cursor to screen y=42
+#
+# So the centre of the screen is 512,384 and the pointer is usable roughly over
+# ir_x 110..900 and ir_y 259..677. The y scale is not the x scale; do not assume
+# one calibration covers both.
+#
 # Frames are the video frame, 60 to the second. A release gap goes in between
 # consecutive presses automatically, because a button the game never sees
 # released is not a press.

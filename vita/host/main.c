@@ -490,6 +490,21 @@ static void vita_pad(BtInput *in, u32 frame, void *user) {
     in->ir_x = (s16)g_script_ir[0];
     in->ir_y = (s16)g_script_ir[1];
   }
+  /* Mirror x once, after both producers, because bt.c's fill_ir puts the two
+   * sensor-bar LEDs at this coordinate in *camera* units and the camera faces
+   * the player: its image is left-right flipped against the screen, and the
+   * game un-flips it. Feeding screen-space x into a camera-space field meant
+   * the pointer ran backwards -- the right stick moved the cursor the wrong
+   * way, and so did every scripted --ir. Measured on the file-select screen:
+   * ir_x 128 put the cursor at screen x=875 and ir_x 896 put it at x=94, a
+   * slope of -1.017 px per unit, which is this mirror and nothing else.
+   *
+   * Only here, so the sentinel survives: bt.c reads a negative ir_x as "the
+   * camera sees nothing", and 1023 - (-1) would read as a pointer at the edge.
+   * Note tests/host/aot_chassis.c fills the same field from GV_IR and is still
+   * camera-space, so the two agree only at the centre. */
+  if (in->ir_x >= 0)
+    in->ir_x = (s16)(1023 - in->ir_x);
 }
 
 static void *vita_rw(const char *name, unsigned size, SceUID *uid) {
