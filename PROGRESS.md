@@ -2,6 +2,64 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — -marm is not better, and the noise floor is about 3%
+
+### The measurement that calibrates the others
+
+`wd_split.log` and `wd_xchunk.log` came from builds that are behaviourally
+identical -- the phase split adds byte stores and nothing else, and host
+equivalence was bit-for-bit at 1200 retraces. They should have measured the
+same. They measured **+1.2% to +2.8%**, in the direction that added work.
+
+That is run-to-run noise on this rig, and nothing smaller than it can be read
+from a single run. It should have been established before the first A/B rather
+than fallen out of one by accident.
+
+| result | against a ~3% floor |
+|---|---|
+| cross-chunk 1.32x | far above; safe |
+| pooled decode buffer, 1.057x at 1100-1400 | above, and `gxvtx` moved as predicted; safe |
+| pooled decode buffer, 1.011x at 400-800 | **inside the floor; do not quote it** |
+| strict aliasing 0.99x | inside; correctly read as no effect |
+| -marm 0.96-0.99x | inside |
+
+The 1.011x above is a figure this log published yesterday without that caveat.
+
+### -marm against -mthumb, AOT objects only
+
+| retraces | -mthumb | -marm |
+|---|---|---|
+| 400-800 | 3.75 VI/s | 3.60 |
+| 800-1100 | 1.79 | 1.77 |
+| 1100-1400 | 1.48 | 1.46 |
+
+Consistently negative and consistently inside the noise floor, so the honest
+reading is "indistinguishable", not "4% slower". **Keep `-mthumb`**: it is the
+toolchain default, it is denser, and ARM has not earned a change.
+
+Sizes, which are not noisy and are the more interesting half:
+
+| | object `.text` | ELF | `eboot.bin` |
+|---|---|---|---|
+| Thumb-2 | 73.63 MiB | 95,350,100 | 33,450,462 |
+| ARM | **87.76 MiB** | 108,635,152 | **30,221,116** |
+
+ARM carries 19% more `.text` and a 13.9% bigger ELF -- and packs 3.2 MB
+*smaller*, because `eboot.bin` is compressed and ARM's fixed-width encoding
+squeezes 3.60x where dense Thumb-2 manages 2.85x. Read across instruction sets,
+eboot size reports the opposite of the truth.
+
+The I-cache prediction did not resolve. 19% more `.text` against a 32 KiB L1I
+should have cost something visible if instruction-cache pressure were the
+binding constraint at these chunk sizes, and it did not move beyond noise. That
+is weak evidence against the I-cache theory, not evidence for it -- and it
+raises rather than lowers the value of the chunk-size sweep, which changes
+function size by 8x rather than 19%.
+
+No host equivalence gate was possible here: `-marm` means nothing on x86, so
+the only check was the device boot reaching the same retraces. Weaker evidence
+than every other change recorded above, which is why the flag stays put.
+
 ## 2026-09-18 — Pooling the decode buffer is 1.06x for three lines
 
 `GxVertexLoader::Decode` was already written for reuse: it `clear()`s both

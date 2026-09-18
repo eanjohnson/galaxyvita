@@ -123,6 +123,15 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   sharing the card, ftpvita included. Stride 8 was enough to do it. Keep the
   product of count and frequency low; the useful frames are rarely so close
   together that it matters.
+- **Run-to-run noise on the device is about 3%, so nothing smaller is a
+  result.** Two builds that were behaviourally identical -- bit-for-bit host
+  equivalent, differing only by profiler byte stores -- measured 1.2% to 2.8%
+  apart on hardware, in the direction that added work. Every A/B here is a
+  single run of each side, so a 1-3% difference is not distinguishable from
+  taking the same build twice. Quote a sub-3% delta as "no measurable effect",
+  and if a change genuinely needs to be resolved at that size, run each side
+  more than once before believing either. This floor was established by
+  accident after five A/Bs had already been run and published.
 - **`eboot.bin` is compressed, so its size is not code size.** The -marm
   build's objects carry 19% more `.text` than the Thumb-2 build and its ELF is
   13.9% bigger -- and its `eboot.bin` is 3.2 MB *smaller*, because ARM's
