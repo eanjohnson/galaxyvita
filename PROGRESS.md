@@ -2,6 +2,74 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — Graphics is worth 1.14x, and two thirds of it is decode
+
+Two results from the same night, both taken on the cross-chunk build at full
+clock, both matched on VI retraces rather than wall clock.
+
+### All of graphics now buys 11-14%
+
+`nogfx.txt` stubs out the GXM sink -- every `sceGxmDraw`, every state call,
+every texture bind -- and leaves FIFO decode running. Against `wd_xchunk.log`,
+the same eboot with graphics on:
+
+| retraces | graphics on | graphics off | speedup |
+|---|---|---|---|
+| 400-800 | 3.61 VI/s | 4.10 VI/s | 1.136x |
+| 800-1100 | 1.70 VI/s | 1.89 VI/s | 1.112x |
+| 1100-1400 | 1.38 VI/s | 1.57 VI/s | 1.138x |
+
+The same experiment on the pre-cross-chunk build said 1.10x/1.25x. Cross-chunk
+removed dispatch overhead, and the graphics share came down with it -- which is
+what a share does when something else gets cheaper and it does not.
+
+**So every Phase 4 item that lives inside the sink shares a ceiling of ~12%.**
+Batching draws, deduping per-draw state, U16 indices: none of them can return
+more than a fraction of that, and the plan ranked them first.
+
+### What survives is decode, and it is 2.7x the submission cost
+
+A gx share is a share of its own run's wall clock, and the two runs cover the
+same retraces in different times, so the shares do not subtract. Converted to
+seconds over the matched window first:
+
+| window | decode | GXM sink | decode/sink |
+|---|---|---|---|
+| 400-800 | 1.7% | 12.0% | 0.1x |
+| 800-1100 | 22.2% | 9.8% | 2.3x |
+| 1100-1400 | **31.6%** | 11.8% | **2.7x** |
+
+The inversion at 400-800 is the reason to believe the rest of the table. With
+almost nothing on screen, decode costs nothing and per-draw submission
+dominates; as geometry arrives, decode scales with it and submission does not.
+Noise does not produce that shape.
+
+That makes ModernGekko's decode path -- ~32% of wall clock at the slow end --
+the largest single cost in the emulator, and **no item in the optimisation plan
+targets it.** `GxStateBackend::Draw` builds a fresh `GxDecodedDraw` per draw,
+two `std::vector`s, at 9,000-11,600 draws a frame: roughly 20,000 heap
+allocate/free pairs per frame before any vertex is touched. Pooling that buffer
+was Phase 4 item 3 and was ranked third against a model of where the cost was
+that this measurement has now replaced.
+
+### Strict aliasing is not load-bearing for the generated C
+
+`-fno-strict-aliasing` has been applied to the AOT objects unconditionally and
+nobody had checked whether it was needed. Rebuilt without it and run to a fixed
+1200 retraces against the recorded cross-chunk fingerprint:
+
+```
+         hits      fifo      mmio_w    retrace   gx        cycles
+alias  6501763   2790620   2850229    1200    1109347   14597079739
+ref    6501763   2790620   2850229    1200    1109347   14597079739
+```
+
+Identical on every counter, including the cycle count. Host equivalence at x86
+`-O2` is necessary and not sufficient -- aliasing miscompiles are exactly the
+class that appears on one target and not another -- so the device run decides
+it, and a boot that stops progressing is the tell to watch for rather than a
+wrong number.
+
 ## 2026-09-18 — The cross-chunk call is worth 1.32x on the console
 
 The dead direct-call path, wired up and flown. Both eboots built from the same
