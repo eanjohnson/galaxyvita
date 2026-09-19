@@ -39,8 +39,19 @@ def ticks(path):
         m = re.match(r'prof samples=(\d+) over=(\d+)ms', line)
         if m:
             cur['samples'], cur['ms'] = int(m.group(1)), int(m.group(2))
-            for k, v in re.findall(r'(guest|idle|disp|gxvtx|gxsub|gxcopy|gxdl|gx|ios|mmio|disc)=(\d+)', line):
+            # The lookbehind is not decoration. The render thread's phases are
+            # reported as rguest=, rgx= and so on, and "rguest=123" contains
+            # "guest=123" one character in -- so without it findall picks the
+            # render thread's number up as the emulation thread's, for every
+            # phase, silently, in any log that has both.
+            for k, v in re.findall(
+                    r'(?<![A-Za-z])(guest|idle|disp|gxvtx|gxsub|gxcopy|gxdl|gx|ios|mmio|disc)=(\d+)',
+                    line):
                 cur[k] = int(v)
+            for k, v in re.findall(
+                    r'(?<![A-Za-z])r(guest|idle|disp|gxvtx|gxsub|gxcopy|gxdl|gx|ios|mmio|disc)=(\d+)',
+                    line):
+                cur['r' + k] = int(v)
         m = re.match(r'gxm frames=(\d+) scenes=\d+ draws=(\d+)', line)
         if m:
             cur['frames'] = int(m.group(1))
@@ -114,6 +125,17 @@ def show(path, lo, hi, by_vi=False):
     # conversion by hand, and getting it wrong is how a graphics phase once
     # looked like it had grown when it had halved.
     print("               " + "  ".join(f"{k}={d[k]/tot*dt:5.1f}s" for k in PH))
+    # The render thread, when there is one. Not added to the line above and
+    # not subtracted from it: the two threads run at once, so the shares would
+    # sum past 100% and the overlap -- the entire point of having a render
+    # thread -- is exactly what a single line cannot show. Read them side by
+    # side: what the emulation thread stopped doing, and what the render
+    # thread picked up.
+    if any(('r' + k) in d for k in PH):
+        rtot = sum(d.get('r' + k, 0) for k in PH) or 1
+        rsamp = d.get('rsamples', rtot)
+        print("        render " + "  ".join(
+            f"{k}={d.get('r' + k, 0)/rtot*rsamp/max(tot,1)*dt:5.1f}s" for k in PH))
     # Cumulative draws at each edge, because matching on retraces is not the
     # same as matching on workload. Draws per second is here for the render
     # thread, where VI/s stops being sufficient on its own: with the GX stack

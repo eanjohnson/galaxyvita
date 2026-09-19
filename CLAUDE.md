@@ -177,6 +177,24 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   with a device result would have been inventing a cause for someone else's
   number. The rule is the project's own: do not assert what was not measured.
 
+- **The emitter's obvious waste is mostly the compiler's to remove, and it
+  already has.** Every emitted guest instruction begins `ctx->pc = 0x...`, one
+  store each, 1.36 M of them across the tree -- and an analysis of which ones
+  anything could actually observe said 51.5% were removable, which read as a
+  10% cut to `.text` in the phase that owns 47% of the window. It is already
+  done: one chunk carries 1,023 pc stores in its C and 482 in its assembly.
+  GCC sinks the dead ones for exactly the reason the analysis found them,
+  and the two numbers agree to within a point. What is *not* removable by the
+  compiler is aliasing it cannot see through: a guest store goes through a
+  `u8*`, character pointers may alias anything even under strict aliasing --
+  which is why turning that flag on measured flat and always would have -- so
+  every `mem_write32` forces a reload of every cached `ctx->gpr[]`. A probe of
+  the emitted shape shows three reloads across two stores, and holding the
+  registers in locals removes all three. The rule: before writing an emitter
+  pass, compile one chunk with `-S` and count what survives. The passes worth
+  writing are the ones about aliasing and invariants, not the ones about dead
+  code.
+
 - **A change worth a percent cannot be measured on its own here, so bundle
   them.** The noise floor is 3%, and by this point every remaining CPU-side
   saving is one to two: the PE drain, the prototype vertex, the dispatch PC
