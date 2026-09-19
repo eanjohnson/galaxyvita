@@ -2,6 +2,69 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — Seven changes too small to measure, measured together: 1.042x
+
+By this point every remaining CPU-side saving was worth about a percent, and
+the noise floor here is three. Run each as its own A/B and the honest report is
+seven times "no measurable effect", which is indistinguishable from seven times
+"no effect" and would have thrown all seven away. So each was gated separately
+-- host equivalence is exact and does not care how small a change is -- and the
+sum was measured in one device run.
+
+| | |
+|---|---|
+| the PE drain fires on events, not on every FIFO write | 96.3 M writes asked the CP three times each for 2,764 tokens and 2,275 finishes |
+| the vertex loader copies a prototype vertex | 140 bytes written once per vertex instead of twice |
+| `AddressSpace::Resolve` moved into the header | called four or five times per vertex, across a TU boundary |
+| one bitmap probe replaces the SMC and HLE scans | 19 + 9 entries scanned on each of 12.58 M dispatches |
+| the hot-PC census is one array of pairs | one cache miss per dispatch instead of two |
+| one write-gather-pipe predicate instead of two | *nothing: GCC had already CSE'd it* |
+| the CP stops zero-initialising a byte scratch | *nothing: GCC had already elided it* |
+
+| retraces | batched eboot | plus the seven | |
+|---|---|---|---|
+| 400-800 | 12.09 VI/s | 12.66 VI/s | **1.047x** |
+| 800-1100 | 3.01 VI/s | 3.10 VI/s | **1.030x** |
+| 1100-1400 | 2.39 VI/s | 2.49 VI/s | **1.042x** |
+
+What makes this more than a noise-floor reading is that the phases moved where
+they were aimed, and nowhere else. At 1100-1400: `disp` 11.8s to 10.2s (the
+dispatch filter and the census), `gx` 17.8s to 15.7s (the PE drain), `gxvtx`
+19.5s to 17.5s (the prototype and the inlined Resolve). `guest` is 54.9s
+against 55.1s and `gxsub` 10.8s against 10.9s -- the two phases none of this
+touches. Three independent 10-14% movements in exactly the three phases
+predicted is a stronger argument than one 4% total. The window is 126s to 120s.
+
+Both sides drew the same thing: 835,244 against 848,836 cumulative draws at the
+low edge and 3,007,731 against 3,011,909 at the high one.
+
+Two of the seven turned out to be nothing, and the tell was an `eboot.bin`
+identical in size to the build before them. `arm-vita-eabi-gcc -S` on the one
+file, before and after, settles it in seconds: 7,342 identical lines of
+assembly for the duplicated predicate, one instruction in 1,398 for the dead
+zero-init. Both were static and pure, or plainly dead, and the compiler had
+already done them. They stay, because one predicate is the better way to write
+it -- but they are recorded here as buying nothing, so nobody credits them.
+
+### More than half the FIFO parse is display lists being read again
+
+The watchdog now prints what the CP has taken in against what it has re-parsed
+out of memory. Over a 720 s run:
+
+```
+gxb=297,237k   dls=1,989,037   dlb=395,015k
+```
+
+290 MB of stream written through the write-gather pipe, and **386 MB re-parsed
+out of display lists** -- 1.99 M calls averaging 203 bytes each. So 57% of
+every byte the command processor decodes is a display list being executed
+again, and `gx` is 15.7s of the 120s window. A list is re-derived from scratch
+on every call: opcodes, vertex descriptors, vertex sizes out of the VCD and VAT
+words. Nothing about a list changes between calls unless the guest rewrites it.
+
+That is the next structural item on the graphics side, and it is the first one
+in a while with a measured size behind it rather than an argument.
+
 ## 2026-09-18 — 99.4% of the draw calls are gone, and it is worth about a percent
 
 The per-draw state dedupe said 99%+ of consecutive primitives want state the
