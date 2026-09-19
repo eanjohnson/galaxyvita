@@ -2,6 +2,45 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — The end-of-frame GPU wait is worth 1.105x, and it is pure serialisation
+
+`present()` ends the scene and then calls `gxm_finish()`, a full wait for the
+GPU. PLAN.md deferred removing it because at 1.1 presents a second a full sync
+costs nothing, which was true when it was written. `nofinish.txt` skips it, so
+the claim could be measured rather than argued.
+
+| retraces | with the wait | without | |
+|---|---|---|---|
+| 800-1100 | 2.58 VI/s | 2.85 VI/s | **1.105x** |
+| 1100-1400 | 2.20 VI/s | 2.35 VI/s | **1.068x** |
+
+`gxcopy` falls 10.5s to 2.6s and 9.9s to 2.0s -- which is how the run was
+checked at all, because the **first attempt at this measurement was void**. The
+guard read `!no_finish || dump_dir[0]`, meant to spare dumped frames, and
+`main.c` sets `dump_dir` unconditionally, so the knob skipped nothing while the
+app logged that it had. That run reported "no change" with `gxcopy` unmoved at
+9.9s -- and a phase that contains the wait cannot be unmoved when the wait is
+removed. That is the check; the VI/s number is only worth reading after it.
+
+It also explains the dedupe result. The GPU consumes the parameter buffer while
+the scene is being recorded, so time spent submitting is time the GPU is
+working. Cut 4.4s out of submission and the GPU has done 4.4s less by the time
+the scene ends, so the wait grows by 4.4s and the frame takes exactly as long.
+That is why every CPU-side graphics saving has come back flat: with the wait in
+place the frame costs `submit + render`, and shrinking `submit` only moves the
+boundary.
+
+So the GPU is **not** the limiter -- removing the wait recovers ~8s of a 136s
+window, and if the GPU were saturated it would recover almost nothing. The wait
+is serialisation, not load. The fix is to overlap it with the next frame rather
+than to skip it: a fragment notification per scene, and a scene waits only for
+the one that last used the arena it is about to write. That also gives the
+per-draw state dedupe its 4.4s back, which it is currently handing to the wait.
+
+`nofinish.txt` is a measurement knob and stays one: with the wait gone the next
+frame's vertices land in an arena the GPU may still be reading, so those frames
+are not to be trusted.
+
 ## 2026-09-18 — The FIFO re-parse was not the cost either, and the skip counts land
 
 The guest writes the write-gather pipe four bytes at a time and `WriteBytes`
