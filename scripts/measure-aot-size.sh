@@ -26,6 +26,25 @@ REPORT="$ROOT/generated/aot/SIZE.txt"
 INC="$ROOT/third_party/DolRecomp/src"
 JOBS="$(nproc)"
 
+# Nothing but generated chunks may live in the chunks directory.
+#
+# CMake globs it and there is no dependency edge from an object back to
+# anything, so a scratch file dropped here silently becomes part of the build
+# and links into the eboot. An experiment comparing two compilations of one
+# chunk left its two intermediates behind -- a command that would have deleted
+# them timed out before it got there -- and the next build compiled a third and
+# fourth copy of the same guest functions. That one failed loudly, on a
+# duplicate symbol; a scratch file that happened to compile would not have.
+CHUNKS="$ROOT/generated/aot/generated/chunks"
+if [[ -d "$CHUNKS" ]]; then
+  stray=$(find "$CHUNKS" -maxdepth 1 -name '*.c' ! -name 'chunk_*.c' -printf '%f\n')
+  if [[ -n "$stray" ]]; then
+    echo "refusing to build: files in chunks/ that dolrecomp did not generate:" >&2
+    echo "$stray" | sed 's/^/  /' >&2
+    exit 1
+  fi
+fi
+
 mkdir -p "$CMAKE_SRC"
 
 # The flags the recompiled guest code is built with, spelled out.

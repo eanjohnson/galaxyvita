@@ -58,6 +58,20 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   it, and cost two days of chasing a "host/Vita divergence" that was really
   last week's code. `scripts/check-aot-fresh.sh` now fails the configure; if a
   device result disagrees with a host result, suspect this first.
+- **Nothing but generated chunks may live in `generated/aot/generated/chunks`.**
+  CMake globs it, so a scratch file dropped there becomes part of the build and
+  links into the eboot. Comparing two compilations of one chunk is the obvious
+  way to price an emitter change and the obvious place to put the intermediates
+  is next to the original, where the includes already resolve -- and a command
+  that would have deleted them afterwards timed out before it got there. The
+  next build compiled a third and fourth copy of the same guest functions.
+  That one failed loudly on a duplicate symbol; a scratch file that happened to
+  compile would not have, and this directory is already the subject of the
+  stale-object trap below for the same reason. Write experiment intermediates
+  into the job scratch with a symlinked `generated.h` beside them, never here.
+  `measure-aot-size.sh` now refuses to build if it finds anything not matching
+  `chunk_*.c`.
+
 - **A census that loses a file wedges the console and only the console.** The
   boot is staged from `generated/census.txt`, and the census is written by a
   host run that can see every file, so a lost entry is a file only the device
