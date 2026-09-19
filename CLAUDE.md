@@ -150,6 +150,19 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   and if a change genuinely needs to be resolved at that size, run each side
   more than once before believing either. This floor was established by
   accident after five A/Bs had already been run and published.
+- **Diff the assembly before claiming a micro-optimisation; the compiler has
+  usually done it already.** Two changes here were written up as removing work
+  from the hottest store in the game -- a duplicated address predicate run
+  twice per MMIO write, and an eight-byte scratch zeroed before four of it was
+  overwritten -- and both compile to the same code they replaced. GCC had
+  common-subexpression-eliminated the predicate (both were static and pure) and
+  elided the dead stores. The tell was an `eboot.bin` identical in size to the
+  build before them; `arm-vita-eabi-gcc -S` on the one file, before and after,
+  settles it in seconds and costs no device time. Neither change was wrong to
+  make -- one predicate is the better way to write it -- but crediting either
+  with a device result would have been inventing a cause for someone else's
+  number. The rule is the project's own: do not assert what was not measured.
+
 - **A change worth a percent cannot be measured on its own here, so bundle
   them.** The noise floor is 3%, and by this point every remaining CPU-side
   saving is one to two: the PE drain, the prototype vertex, the dispatch PC
