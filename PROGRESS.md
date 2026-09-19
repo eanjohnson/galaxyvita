@@ -2,6 +2,74 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — 99.4% of the draw calls are gone, and it is worth about a percent
+
+The per-draw state dedupe said 99%+ of consecutive primitives want state the
+context already holds. That is not a fact about the game's material list: it is
+the shape of one draw arriving seven vertices at a time, because that is how GX
+delivers a display list through the FIFO. So the draw call itself was the
+redundancy. Indices already go into one arena in submission order, so a
+primitive that changes nothing joins the open batch by adding to a count.
+
+`on_prim_end` decides that before it pushes anything, and the join test names
+the exact condition of each push below it -- same program, same alpha register
+and texturedness, same depth func and write, same texture, same viewport, same
+stream, and indices that carry straight on. `flush_batch()` issues the batch the
+moment that fails, and at end of scene before the arena goes to the GPU.
+
+It works, completely:
+
+| | per run | per frame |
+|---|---|---|
+| primitives (`draws`) | 9,922,142 | 4,410 |
+| `sceGxmDraw` calls (`gxdraws`) | 62,808 | **28** |
+| merged (`bat`) | 9,859,334 | **99.4%** |
+
+Eight device frames byte-identical against the same build without it, five of
+them carrying real geometry (168-353 distinct colours sampled) rather than the
+opening flash.
+
+And it is worth about a percent:
+
+| retraces | one draw per primitive | merged | |
+|---|---|---|---|
+| 800-1100 | 2.90 VI/s | 2.90 VI/s | — |
+| 1100-1400 | 2.41 VI/s | 2.43 VI/s | 1.008x |
+
+`gxsub` falls 5.6s to 4.8s and 12.0s to 10.5s -- a real 12-14% out of the phase
+this aims at, and 1.5s out of a 124s window, which is inside the 3% noise floor.
+Every other phase is unmoved.
+
+So the draw call was never the cost. What is left in `gxsub` is 10.5s for 9.9 M
+primitives and 63 k draws: the index emission and the join test itself, not the
+submission. Per-primitive work is the cost, and removing the per-primitive API
+call does not remove the per-primitive work.
+
+### The reference pass was void, and the draw count is what said so
+
+The A/B this was first read from had the reference running 2.2x faster at
+800-1100 than the same binary had two runs earlier. No graphics change does
+that. At frame ~1100 the reference had issued 530,006 draws where the batched
+run had 1,109,774, and the earlier run of the reference binary had 1,144,838 --
+so the batched run and the earlier one were drawing the same thing and the
+reference pass was not. The input replay had landed somewhere different. The
+comparison above is against that earlier run, which matches on draws to within
+1% at both window edges. CLAUDE.md now carries this as a trap: a matched
+retrace is not a matched workload.
+
+### U16 indices are not free here, so they are not taken
+
+PLAN.md listed them as free on the grounds that GX vertex counts are `uint16_t`.
+They are, but the arena is not per-draw: one vertex buffer and one index buffer
+serve a whole scene, `ARENA_VERTS` is 98,304, and an index value has to reach
+the last vertex in the scene. Taking U16 means capping a scene at 65,536
+vertices and dropping geometry past it -- against an observed average of 29,748
+a frame, so a heavy frame would silently lose triangles. What it buys is about
+65 k indices a frame going from four bytes to two: 39 MB less written across the
+whole 124s window, and a GPU-side fetch saving on hardware the fence measurement
+already proved is not the limiter. That is a cap on scene complexity in exchange
+for nothing measurable, so it stays U32.
+
 ## 2026-09-18 — The GPU now overlaps the next frame, for 1.07x, and the dedupe gets its time back
 
 The wait measured the day before was worth 1.105x and was serialisation rather
