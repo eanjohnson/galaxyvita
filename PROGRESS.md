@@ -2,6 +2,66 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-19 — Display-list replay is 57% of the bytes and 1.5% of the time
+
+The watchdog's new byte counters said 290 MB of FIFO stream against 386 MB
+re-parsed out of display lists over a full run -- 57% of every byte the command
+processor decodes, and 63% of them in the 1100-1400 window. That is a ratio of
+bytes, and it was about to be spent as if it were a ratio of time. `gxdl` is a
+`PhaseScope` around `ExecuteDisplayList`'s decode loop, so replay is now
+measured instead. Nested lists restore to the enclosing one and the vertex-load
+and submit scopes inside restore to this, so the phase is the walk alone.
+
+**The walk is 1.5% of wall clock.** 11,159 of 747,322 samples over a 911s run;
+2.3s of the 122s at retraces 1100-1400, 4.9s of the 272s at 1400-2000. The byte
+ratio overstated it roughly forty-fold, because most of a display list is
+vertex payload the walk *skips* -- it adds `count * vertex_size` and moves on --
+and the work it reaches already has its own phases in `gxvtx` and `gxsub`.
+
+That kills the cache this was meant to justify, and the reading that it reduces
+to one thing kills most of the rest. `LoadCp`, `LoadXfRegisters`,
+`LoadBpRegister`, `LoadIndexedXf` and `Draw` all depend on live register state
+or on vertex data embedded in the list, so they must run on every call; what a
+cached (offset, length) table would remove is the length derivation, and for
+every opcode but a draw that is already a constant out of the switch. So the
+cacheable part of a list replay is `GetVertexSize`, and a per-list table would
+buy the rest of a 1.5% ceiling at the price of invalidating against a guest
+that can rewrite a list in place.
+
+`GetVertexSize` on its own is worth memoising, and it is exact: a pure function
+of VCD low/high and one VAT's three words, all five of which only change
+through `LoadCp`. Eight entries and a validity bitmask, VCD dropping all eight
+and a VAT word dropping its own.
+
+| retraces | memo off | memo on | |
+|---|---|---|---|
+| 400-800 | 12.56 VI/s | 12.59 VI/s | 1.002x |
+| 800-1100 | 2.99 VI/s | 3.06 VI/s | 1.023x |
+| 1100-1400 | 2.50 VI/s | 2.54 VI/s | 1.016x |
+| 1400-2000 | 2.20 VI/s | 2.25 VI/s | 1.023x |
+
+One eboot, both sides, `nodlcache.txt` the only difference -- the strongest A/B
+form this project has. Every window is inside the 3% noise floor, so by this
+project's own rule the VI/s column says *no measurable effect*. The phases say
+more than that: **12.65 M hits against 71.8 k misses, a 99.4% hit rate**, and
+`gxdl` 4.9s to 2.0s with `gx` 31.6s to 29.7s at 1400-2000. A 59% drop in a
+phase is not a noise-floor reading even when the total it contributes to is.
+The honest summary is a change worth about 1.8% of the window, consistent in
+direction across all four, which is what the bundling rule exists for.
+
+The host boot never executes a single display list (`dls=0`), so this is one
+where the host gate proves equivalence and says nothing about the cost -- and
+the host's own hit rate, exactly one hit per miss, would have predicted the
+memo was worthless. The console reloads CP state once per list and draws many
+times; the host workload reloads it before every draw.
+
+The conformance test needed the same scepticism. It had compared
+`GetVertexSize` against Dolphin's reference over 100,000 random states for
+months, but it rewrote all five registers every iteration and so never served a
+cached entry -- it would have passed with no invalidation at all. A second pass
+keeps eight VATs live, touches one register at a time and reads all eight back;
+removing any one of the five invalidations makes it fail.
+
 ## 2026-09-18 — Seven changes too small to measure, measured together: 1.042x
 
 By this point every remaining CPU-side saving was worth about a percent, and
