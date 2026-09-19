@@ -150,6 +150,17 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   and if a change genuinely needs to be resolved at that size, run each side
   more than once before believing either. This floor was established by
   accident after five A/Bs had already been run and published.
+- **A change worth a percent cannot be measured on its own here, so bundle
+  them.** The noise floor is 3%, and by this point every remaining CPU-side
+  saving is one to two: the PE drain, the prototype vertex, the dispatch PC
+  filter, the census interleave. Run each as its own A/B and the honest report
+  is four times "no measurable effect", which is indistinguishable from four
+  times "no effect" and would have thrown all four away. Gate them separately
+  -- host equivalence is exact and does not care how small the change is -- and
+  then measure the sum in one device run, saying in the write-up which changes
+  the number covers. The corollary is that a bundle only works if every part of
+  it passed its own gate first: a bundle is a measurement shortcut, never a
+  correctness one.
 - **`eboot.bin` is compressed, so its size is not code size.** The -marm
   build's objects carry 19% more `.text` than the Thumb-2 build and its ELF is
   13.9% bigger -- and its `eboot.bin` is 3.2 MB *smaller*, because ARM's
