@@ -41,9 +41,10 @@ def ticks(path):
             cur['samples'], cur['ms'] = int(m.group(1)), int(m.group(2))
             for k, v in re.findall(r'(guest|idle|disp|gxvtx|gxsub|gxcopy|gx|ios|mmio|disc)=(\d+)', line):
                 cur[k] = int(v)
-        m = re.match(r'gxm frames=(\d+)', line)
+        m = re.match(r'gxm frames=(\d+) scenes=\d+ draws=(\d+)', line)
         if m:
             cur['frames'] = int(m.group(1))
+            cur['draws'] = int(m.group(2))
     return [t for t in out if 'samples' in t and 'vi' in t]
 
 # gxvtx/gxsub/gxcopy are absent from logs written before the split and read
@@ -60,7 +61,7 @@ def window(ts, lo, hi):
     dt = b['t'] - a['t']
     d = {k: b.get(k, 0) - a.get(k, 0) for k in PH + ['samples', 'vi', 'hits', 'frames']}
     tot = sum(d[k] for k in PH) or 1
-    return a['t'], b['t'], dt, d, tot
+    return a['t'], b['t'], dt, d, tot, a.get('draws'), b.get('draws')
 
 def window_by_vi(ts, lo, hi):
     """Window between two retrace counts rather than two wall-clock times.
@@ -89,7 +90,7 @@ def window_by_vi(ts, lo, hi):
     dt = b['t'] - a['t']
     d = {k: b.get(k, 0) - a.get(k, 0) for k in PH + ['samples', 'vi', 'hits', 'frames']}
     tot = sum(d[k] for k in PH) or 1
-    return a['t'], b['t'], dt, d, tot
+    return a['t'], b['t'], dt, d, tot, a.get('draws'), b.get('draws')
 
 
 def show(path, lo, hi, by_vi=False):
@@ -100,7 +101,7 @@ def show(path, lo, hi, by_vi=False):
     if not w:
         print(f"{path}: window {lo}-{hi} not covered "
               f"(log ends t={ts[-1]['t']}s vi={ts[-1]['vi']})"); return
-    t0, t1, dt, d, tot = w
+    t0, t1, dt, d, tot, d0, d1 = w
     vis = d['vi'] / dt
     print(f"{path.split('/')[-1]:14} t={t0}->{t1}s  VI/s={vis:5.2f}  "
           f"({vis/59.94*100:4.1f}% of real time)  frames={d['frames']:4d}  "
@@ -113,6 +114,18 @@ def show(path, lo, hi, by_vi=False):
     # conversion by hand, and getting it wrong is how a graphics phase once
     # looked like it had grown when it had halved.
     print("               " + "  ".join(f"{k}={d[k]/tot*dt:5.1f}s" for k in PH))
+    # Cumulative draws at each edge, because matching on retraces is not the
+    # same as matching on workload. Two passes of one eboot with one input
+    # script came out 2.2x apart here, and the reason was that at frame ~1100
+    # one had issued 530,006 draws and the other 1,109,774 -- the replay had
+    # landed somewhere different and the game was showing less. Speed is only
+    # comparable between runs that were drawing the same thing, so these two
+    # numbers have to agree between the sides before the line above means
+    # anything. Within a percent or two is the same workload.
+    if d0 is not None and d1 is not None:
+        per = (d1 - d0) / max(d['frames'], 1)
+        print(f"               workload draws {d0:,} -> {d1:,}"
+              f"  ({per:,.0f} per frame)")
 
 if __name__ == '__main__':
     args = sys.argv[1:]
