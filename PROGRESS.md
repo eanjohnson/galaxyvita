@@ -2,6 +2,76 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-19 — 7.26% less code, and the console cannot tell
+
+`CPUState::downcount` was an `s64`. The C backend read-modify-writes it at the
+head of every basic block and the value never leaves [-1280, 10000], so the
+upper word has never carried information. Narrowing it to `s32` is the largest
+single reduction in emitted code this project has made:
+
+| | `.text` | ELF | eboot |
+|---|---|---|---|
+| s64 | 77,623,814 | 95,364,740 | 33,457,274 |
+| s32 | 71,989,856 | 89,566,376 | 32,657,415 |
+| | **-7.26%** | -6.08% | -2.39% |
+
+Both builds Thumb-2, so that comparison is fair; `.text` is the number quoted
+because it is what the instruction cache holds.
+
+The mechanism is not the arithmetic and is worth carrying forward. The field
+sits past offset 3400 -- `locked_cache_tag[512]` is in front of it -- and
+Thumb-2's `ldrd` reaches only `imm8<<2`, so GCC never used a doubleword access
+at all. It pinned a *second base register* across every basic block purely to
+address the high word:
+
+    ldr  r2, [r3, #3440]      @ low word
+    add  r5, r3, #3440        @ a second base, just for the high word
+    ldr  r1, [r5, #4]
+    subs r2, r2, #1
+    str  r2, [r3, #3440]
+    adc  r1, r1, #-1
+    str  r1, [r5, #4]
+
+against `ldr`/`subs`/`str` at 32 bits. Freeing `r5` is most of the win: guest
+register loads fall from 7.84% of emitted instructions to 6.36%, which is
+exactly what the plan's 5.80% "cache guest registers in locals" target was
+aiming at and could not reach directly.
+
+**On the device it is not measurable.** Two passes, same source but the width
+of one field, `prof.txt` on, render thread off:
+
+| window | VI/s s64 -> s32 | draws/frame | blocks/s | guest seconds |
+|---|---|---|---|---|
+| 400-800 | 12.78 -> 12.38 (-3.1%) | 55 / 72 (+30.9%) | +0.9% | 16.7 -> 16.7 |
+| 800-1100 | 3.08 -> 3.07 (-0.3%) | 2,812 / 2,922 (+3.9%) | +1.8% | 51.8 -> 51.2 (-1.2%) |
+| 1100-1400 | 2.57 -> 2.61 (+1.6%) | 7,158 / 7,170 (+0.2%) | +1.8% | 54.2 -> 53.2 (-1.8%) |
+
+Read only the last row: it is the only window where the two runs drew the same
+thing, 0.2% apart on draws per frame. The 400-800 window is 31% apart and its
+-3.1% means nothing. At 1100-1400 the change is worth **+1.6% VI/s and -1.8%
+guest seconds**, both under the 3% noise floor, on a single run of each side.
+`blocks/s` is up 0.9-1.8% in all three windows, which is the most direct measure
+of dispatch throughput and does not depend on the emulated clock -- consistent
+in direction, still inside the noise.
+
+The reference pass is trustworthy: it reproduces the previous run of the same
+binary to within 0.5% on hits, GX bytes and display lists at t=700.
+
+**The finding is the ratio, and it closes a workstream.** Removing 7.26% of
+every ARM instruction the recompiler emits moved guest time by 1.8%. Roughly
+three quarters of guest time is therefore not instruction issue -- it is memory
+stalls, branch mispredicts and cache misses, which is what the chunk-size sweep
+already implied when a 77 MiB `.text` slowed down C++ whose machine code had
+not changed. Phase 2 of the plan has three remaining emitter items and all of
+them are worth single-digit percentages of *instructions*; at this exchange
+rate that is a fraction of a percent of time each, and none can be resolved on
+hardware. The emitter micro-optimisation workstream should stop here.
+
+The change is kept. It is strictly less code, it passed host equivalence
+exactly -- every counter identical at 1200 retraces and 39 of 39 dumped frames
+byte-for-byte -- and a smaller `.text` is worth having on its own terms. But it
+is recorded as "no measurable effect", not as a win.
+
 ## 2026-09-19 — The render thread is 19x slower, and VI/s called it 2.2x faster
 
 The whole GX stack -- FIFO parse, display-list replay, vertex load, GXM

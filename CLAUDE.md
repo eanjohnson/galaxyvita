@@ -275,6 +275,21 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   census of the source ranks what you thought to name; a census of the
   assembly ranks what is there.
 
+- **Emitted instruction count buys time at about four to one, so stop pricing
+  emitter work in instructions.** Narrowing `downcount` removed **7.26% of
+  `.text`** across the whole binary -- the largest single reduction in emitted
+  code this project has made, verified at the linker with both builds in
+  Thumb-2 -- and on hardware it moved guest phase time by **1.8%** and VI/s by
+  1.6%, both under the noise floor, in the one window where the two runs were
+  drawing the same thing. Three quarters of guest time is not instruction
+  issue: it is memory stalls, branch mispredicts and cache misses, which is
+  what the chunk-size sweep already implied when a 77 MiB `.text` slowed down
+  C++ whose machine code had not changed. The practical consequence is that a
+  static census result must be divided by four before it is compared to the 3%
+  device noise floor -- so an emitter change worth 5% of instructions is worth
+  about 1% of time and cannot be resolved on this console at all. Aim emitter
+  work at what the guest *waits* for, not at how many instructions it issues.
+
 - **A change worth a percent cannot be measured on its own here, so bundle
   them.** The noise floor is 3%, and by this point every remaining CPU-side
   saving is one to two: the PE drain, the prototype vertex, the dispatch PC
