@@ -72,6 +72,18 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   `measure-aot-size.sh` now refuses to build if it finds anything not matching
   `chunk_*.c`.
 
+  Deleting the stray source is not enough, and this is the half that cost the
+  second hour. `run-host-chassis.sh` links by `find`ing every `.o` under
+  `aot-host`, so the *object* outlives its source: the rebuild's CMake glob
+  correctly dropped `_dc.c` from the build graph and the link still picked
+  `_dc.c.o` off the disk and failed on a duplicate symbol, forty minutes after
+  the cleanup that was meant to have finished the job. A duplicate symbol is
+  the loud outcome; an orphaned object that does not collide links silently and
+  runs code with no source in the tree, which is the stale-object trap below
+  wearing a different hat. That script now refuses any object whose source is
+  gone. If a link fails on a duplicate symbol right after an experiment, look
+  for objects before looking at the code.
+
 - **A census that loses a file wedges the console and only the console.** The
   boot is staged from `generated/census.txt`, and the census is written by a
   host run that can see every file, so a lost entry is a file only the device

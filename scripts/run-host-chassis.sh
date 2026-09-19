@@ -12,10 +12,32 @@ mkdir -p "$OUT"
 # globbed default has no dependency edge back to the C it came from, which is
 # how a stale object once passed for a host/Vita divergence.
 AOT_HOST_DIR="${GV_AOT_HOST_DIR:-$ROOT/generated/build/aot-host}"
+GEN_DIR_PROBE="${GV_AOT_GEN_DIR:-$ROOT/generated/aot/generated}"
 mapfile -t OBJS < <(find "$AOT_HOST_DIR" \( -name '*.o' -o -name '*.obj' \) \
   ! -name 'CMakeCCompilerABI.*' ! -name 'CMakeCCompilerId.*' | sort)
 if [[ ${#OBJS[@]} -eq 0 ]]; then
   echo "no host AOT objects in $AOT_HOST_DIR — run ./scripts/measure-aot-size.sh first" >&2
+  exit 1
+fi
+
+# An object whose source no longer exists is stale by definition, and this find
+# is what picks it up: deleting a chunk, or a scratch file that was never meant
+# to be compiled, leaves the object behind and the link takes it. It happened.
+# An experiment wrote two intermediates into the chunks directory, CMake's glob
+# built them, the sources were then removed and the build graph correctly forgot
+# them -- and this link still found the objects and failed on a duplicate
+# symbol, forty minutes after the rebuild that was supposed to have cleaned up.
+# A duplicate symbol is the loud case; an orphan that does not collide would
+# have linked silently and run code with no source in the tree.
+ORPHANS=()
+for o in "${OBJS[@]}"; do
+  b="$(basename "$o")"; b="${b%.o}"; b="${b%.obj}"
+  [[ -f "$GEN_DIR_PROBE/$b" || -f "$GEN_DIR_PROBE/chunks/$b" ]] || ORPHANS+=("$b")
+done
+if [[ ${#ORPHANS[@]} -gt 0 ]]; then
+  echo "refusing to link: ${#ORPHANS[@]} host AOT object(s) have no source:" >&2
+  printf '  %s\n' "${ORPHANS[@]:0:8}" >&2
+  echo "  Delete them from $AOT_HOST_DIR and rebuild." >&2
   exit 1
 fi
 
