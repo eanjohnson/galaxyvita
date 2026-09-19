@@ -61,7 +61,7 @@ void gx_cp_set_sink(GxCp *cp, const GxSink *sink);
  * ModernGekko have no Chassis and must keep having none, so the chassis hands
  * over the byte and the four values, and nothing else crosses. */
 void gx_cp_set_phase_slot(volatile u8 *slot, u8 parse, u8 vtxload, u8 submit,
-                          u8 copy);
+                          u8 copy, u8 dlist);
 const GxRegs *gx_cp_regs(const GxCp *cp);
 
 u32 gx_cp_pending(const GxCp *cp);
@@ -84,6 +84,14 @@ u64 gx_cp_display_lists(const GxCp *cp);
 u64 gx_cp_display_list_bytes(const GxCp *cp);
 u64 gx_cp_display_lists_unresolved(const GxCp *cp);
 u64 gx_cp_undecoded(const GxCp *cp);
+
+/* The per-VAT vertex size is recomputed from the VCD and VAT words on every
+ * draw command, including twice per draw on the stream path -- once to ask
+ * how long the command is and once to run it. Memoise it, with the knob so
+ * one build measures both sides. */
+void gx_cp_set_vertex_size_cache(GxCp *cp, int on);
+u64 gx_cp_vsize_hits(const GxCp *cp);
+u64 gx_cp_vsize_misses(const GxCp *cp);
 
 /* Command-stream capture, kept deliberately rather than deleted after the
  * first bug it found. Off unless GV_GX_TRACE names a file; records the first

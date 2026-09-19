@@ -466,6 +466,22 @@ u64 gx_cp_display_list_bytes(const GxCp *cp) { return cp ? cp->dl_bytes : 0; }
 u64 gx_cp_display_lists_unresolved(const GxCp *cp) { return cp ? cp->dls_unresolved : 0; }
 u64 gx_cp_undecoded(const GxCp *cp) { return cp ? cp->undecoded : 0; }
 
+void gx_cp_set_vertex_size_cache(GxCp *cp, int on)
+{
+  if (cp != nullptr)
+    cp->processor.SetVertexSizeCache(on != 0);
+}
+
+u64 gx_cp_vsize_hits(const GxCp *cp)
+{
+  return cp != nullptr ? cp->processor.GetVertexSizeHits() : 0u;
+}
+
+u64 gx_cp_vsize_misses(const GxCp *cp)
+{
+  return cp != nullptr ? cp->processor.GetVertexSizeMisses() : 0u;
+}
+
 void gx_cp_trace(GxCp *cp, const char *path)
 {
   if (cp == nullptr)
@@ -490,13 +506,14 @@ void gx_cp_trace_flush(GxCp *cp)
 }
 
 void gx_cp_set_phase_slot(volatile u8 *slot, u8 parse, u8 vtxload, u8 submit,
-                          u8 copy)
+                          u8 copy, u8 dlist)
 {
   (void)parse; /* the chassis already sets it around the whole MMIO write */
   g_ph_submit = submit;
   g_ph_copy = copy;
   moderngekko::g_phase_slot = slot;
   moderngekko::g_phase_vertex_load = vtxload;
+  moderngekko::g_phase_display_list = dlist;
 }
 
 void gx_cp_set_sink(GxCp *cp, const GxSink *sink)

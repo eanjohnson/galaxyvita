@@ -47,6 +47,7 @@
 /* Turns the idle fold off, so its A/B is one binary and one boot apart. */
 #define NOSKIP_FLAG "ux0:data/galaxyvita/noskip.txt"
 #define GPUSYNC_FLAG "ux0:data/galaxyvita/gpusync.txt"
+#define NODLCACHE_FLAG "ux0:data/galaxyvita/nodlcache.txt"
 /* Where the sampling profiler leaves its guest-PC histogram. */
 #define PROF_PC_PATH "ux0:data/galaxyvita/prof-pc.txt"
 /* Buttons to hold down without anyone holding them. The boot is gated by
@@ -604,7 +605,7 @@ static int watchdog(SceSize args, void *argp) {
      * thread could ever service a system event. */
     sceKernelDelayThreadCB(2 * 1000 * 1000);
     const Chassis *ch = g_watch;
-    char buf[448];
+    char buf[512];
     int n;
     if (!ch) {
       ticks++;
@@ -639,7 +640,7 @@ static int watchdog(SceSize args, void *argp) {
                   * parsed again every time it is called -- so how much of that
                   * phase is the stream and how much is replay is the ratio of
                   * these two, and nothing else says it. */
-                 "gxb=%uk dls=%u dlb=%uk "
+                 "gxb=%uk dls=%u dlb=%uk vsz=%u/%u "
                  "free=%dk cdram=%dk phy=%dk wr=%d probe=%d lost=%u "
                  "io=%ums/%u "
                  "pres=%u prc=0x%08x clk=%d/%d/%d%s%s\n",
@@ -648,6 +649,8 @@ static int watchdog(SceSize args, void *argp) {
                  (unsigned)(gx_cp_bytes_in(ch->gx) / 1024u),
                  (unsigned)gx_cp_display_lists(ch->gx),
                  (unsigned)(gx_cp_display_list_bytes(ch->gx) / 1024u),
+                 (unsigned)(gx_cp_vsize_hits(ch->gx) / 1000u),
+                 (unsigned)gx_cp_vsize_misses(ch->gx),
                  mem.size_user / 1024, mem.size_cdram / 1024,
                  mem.size_phycont / 1024, wrote, probe, lost,
                  (unsigned)(g_disc_io_us / 1000u), g_disc_io_n,
@@ -1026,6 +1029,14 @@ no_gfx:
     if (sceIoGetstat(NOSKIP_FLAG, &sst) >= 0) {
       ch.idle_skip = 0;
       log_line("idle skip disabled by " NOSKIP_FLAG);
+    }
+  }
+  {
+    SceIoStat vst;
+    memset(&vst, 0, sizeof(vst));
+    if (sceIoGetstat(NODLCACHE_FLAG, &vst) >= 0) {
+      gx_cp_set_vertex_size_cache(ch.gx, 0);
+      log_line("vertex-size memo disabled by " NODLCACHE_FLAG);
     }
   }
   {

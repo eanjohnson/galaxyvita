@@ -106,7 +106,8 @@ int gvprof_on(void) { return g_on; }
 void gvprof_report(char *out, unsigned n) {
   static const char *k_name[CHASSIS_PH_COUNT] = {"guest", "idle",  "disp",
                                                  "gx",    "ios",   "mmio", "disc",
-                                                 "gxvtx", "gxsub", "gxcopy"};
+                                                 "gxvtx", "gxsub", "gxcopy",
+                                                 "gxdl"};
   SceUInt64 now = g_run ? (SceUInt64)sceKernelGetProcessTimeWide() : g_t1;
   u32 s = g_samples;
   u32 ms = g_t0 ? (u32)((now - g_t0) / 1000u) : 0u;

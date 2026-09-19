@@ -5,6 +5,7 @@
 
 #include "chassis.h"
 #include "gx_soft.h"
+#include "gx_cp.h"
 
 #include <stdio.h>
 #include <signal.h>
@@ -311,6 +312,10 @@ int main(int argc, char **argv) {
    * be available without a rebuild. */
   if (getenv("GV_NO_IDLE_SKIP"))
     ch.idle_skip = 0;
+  /* Same reason: the vertex-size memo is meant to be invisible, so both
+   * sides of it have to be reachable from one binary. */
+  if (getenv("GV_NO_DLCACHE"))
+    gx_cp_set_vertex_size_cache(ch.gx, 0);
   prof_start();
   if (!chassis_load_dol(&ch, dol))
     return 1;
@@ -347,6 +352,9 @@ int main(int argc, char **argv) {
          (unsigned long long)gx_cp_display_list_bytes(ch.gx),
          (unsigned long long)gx_cp_display_lists_unresolved(ch.gx),
          (unsigned long long)gx_cp_undecoded(ch.gx));
+  printf("gx vsize hits=%llu misses=%llu\n",
+         (unsigned long long)gx_cp_vsize_hits(ch.gx),
+         (unsigned long long)gx_cp_vsize_misses(ch.gx));
   if (ch.have_disc && ch.disc.seq) {
     /* The last files the game asked for, newest first: the boot's high-water
      * mark. Capped because a full run touches hundreds.

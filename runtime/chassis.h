@@ -41,6 +41,9 @@ enum {
   CHASSIS_PH_GXVTX,
   CHASSIS_PH_GXSUB,
   CHASSIS_PH_GXCOPY,
+  /* Display-list replay: the walk over a recorded list, excluding the
+   * vertex load and submit it reaches, which keep their own phases. */
+  CHASSIS_PH_GXDL,
   CHASSIS_PH_COUNT
 };
 

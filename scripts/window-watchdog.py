@@ -50,7 +50,7 @@ def ticks(path):
 # gxvtx/gxsub/gxcopy are absent from logs written before the split and read
 # as zero there, which is what a run that did not measure them should look
 # like, and keeps those logs comparable on every other phase.
-PH = ['guest', 'idle', 'disp', 'gx', 'gxvtx', 'gxsub', 'gxcopy',
+PH = ['guest', 'idle', 'disp', 'gx', 'gxvtx', 'gxsub', 'gxcopy', 'gxdl',
       'ios', 'mmio', 'disc']
 
 def window(ts, lo, hi):
