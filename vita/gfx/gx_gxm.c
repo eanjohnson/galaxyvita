@@ -1325,9 +1325,15 @@ static void present(void) {
    * out of submission and put 4.3s straight back into this wait. The knob is
    * how that is measured -- it does not make skipping the wait safe, because
    * the next frame's vertices then land in an arena the GPU may still be
-   * reading. A dump or a snap needs the frame finished whatever the knob says.
-   */
-  if (!g.no_finish || g.dump_dir[0])
+   * reading. A dump or a snap needs the frame finished, and gets it: both go
+   * through gxm_capture(), which waits for the GPU itself.
+   *
+   * The first version of this guard said `|| g.dump_dir[0]`, meaning to spare
+   * dumped frames -- and main.c calls gx_gxm_dump_frames() unconditionally, so
+   * dump_dir is always set and the knob never skipped anything. The run still
+   * logged that the wait had been skipped. A whole device run measured a
+   * control that did nothing and reported it as "no change". */
+  if (!g.no_finish)
     gxm_finish();
   g.in_scene = 0;
   dump_frame();
