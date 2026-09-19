@@ -191,6 +191,22 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   guest progress. If it can, quote bytes decoded, draws, or dispatches per real
   second alongside it, and say which one the conclusion rests on.
 
+- **The threaded GX consumer's stall is inside GXM, not core contention, and
+  the affinity experiment is finished.** It spends 96% of its life in the EFB
+  copy callback. Moving it off CPU1 -- which it shares with `display`, the
+  thread that retires GXM display-queue frames -- was the obvious explanation
+  and `rendercpu2.txt` tested it: 18,896 ms per copy became 14,745 ms, with
+  total time inside the callback identical to within 1% and the emulation
+  thread 90% idle in both. That is the same answer twice, not a collapse. The
+  ring is healthy through both passes (`run=1 wedged=0 stalls=0`, depth
+  oscillating well under its cap), so nothing in our own queueing is to blame.
+  `on_copy` reduces to `present()`, whose only blocking calls are
+  `sceGxmEndScene` and `sceGxmDisplayQueueAddEntry`; the arena's
+  `gxm_fence_wait` is *not* a candidate because it lives in
+  `begin_scene_if_needed` and is accounted to a different phase. Do not re-run
+  the affinity A/B. Split `gxcopy` into a sub-phase per GXM call if this is
+  picked up again -- from the outside the two calls are indistinguishable.
+
 - **A matched retrace is not a matched workload; check the draw count at the
   window boundary.** Two passes of the same eboot with the same `input.txt`
   came out 2.2x apart at retraces 800-1100, which no graphics change could do.

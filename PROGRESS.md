@@ -2,6 +2,48 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-19 — the render thread's stall is not core contention
+
+The threaded GX consumer spends 96% of its life inside one callback, the
+EFB copy. The hypothesis behind that was contention: the consumer shares CPU1
+with `display`, the thread that retires GXM display-queue frames, and it blocks
+in GXM without yielding. `rendercpu2.txt` was added to move it to CPU2 and the
+test was stated before the run: if the block survives the move, the affinity
+hypothesis is dead.
+
+It survived. One eboot, two passes, the card file the only difference:
+
+| consumer core | copies | run | ms inside each copy | GX bytes | emulation idle |
+|---|---|---|---|---|---|
+| CPU1 | 33 | 614 s | **18,896** | 204k | 590,679 / 652,623 |
+| CPU2 | 42 | 610 s | **14,745** | 275k | 586,098 / 648,000 |
+
+14.7 s is not a collapse from 18.9 s; it is the same number with the same
+meaning. Total time inside the callback is identical to within 1% — 624 s
+against 617 s — so the thread is saturated either way and the extra nine copies
+on CPU2 are the noise floor, not a win. The same callback on the emulation
+thread totals **2.0 seconds** across the whole 1100-1400 window. Three orders
+of magnitude.
+
+What the run rules out is as useful as what it does not. The ring is healthy in
+both passes: `run=1 wedged=0 stalls=0 spins=0` throughout, and `depth` oscillates
+between 191 and 797 against its cap, so the producer is never blocked by a full
+queue. The guest is in `OS_IDLE_WAIT` for 90% of both runs, waiting on a GP that
+cannot finish. And the render thread does no other work to speak of —
+`rgxsub` is 1.3-1.5 s and `rgxvtx` is one sample — so this is not slow drawing,
+it is a block.
+
+That leaves GXM. `on_copy` reduces to `present()`, and `present()` has exactly
+two calls that can block: `sceGxmEndScene` and `sceGxmDisplayQueueAddEntry`.
+The one unbounded wait in the graphics path, `gxm_fence_wait` on the vertex
+arena, is not a candidate — it lives in `begin_scene_if_needed`, which is
+accounted to a different phase and reads zero here. Splitting `gxcopy` into a
+sub-phase per GXM call would name the culprit in one run; nothing else will,
+because from the outside the two are indistinguishable.
+
+The threaded consumer therefore stays off by default and `gputhread.txt`
+remains a knob, not a plan.
+
 ## 2026-09-19 — 7.26% less code, and the console cannot tell
 
 `CPUState::downcount` was an `s64`. The C backend read-modify-writes it at the
