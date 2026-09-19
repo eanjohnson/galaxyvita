@@ -580,6 +580,11 @@ static int pin_self(int affinity, const char *name) {
  * only the logging was lost. */
 static const Chassis *volatile g_watch;
 
+/* Read by the watchdog, written by the render thread: how often the consumer
+ * found the ring empty. Defined here because the watchdog is above the
+ * render thread in this file and needs it. */
+static volatile int g_render_idle_spins;
+
 static int watchdog(SceSize args, void *argp) {
   (void)args;
   (void)argp;
@@ -662,6 +667,26 @@ static int watchdog(SceSize args, void *argp) {
                  hits == last ? "  STALLED" : "",
                  log_stuck ? "  LOGLOCKED" : "");
     wrote = sceIoWrite(fd, buf, (SceSize)(n > 0 ? n : 0));
+    /* The ring, when there is one.
+     *
+     * The first threaded device run died with a null-pointer dereference in
+     * the render thread and reported nothing at all: boot.log empty, no core
+     * dump, the watchdog line identical to a healthy run right up to the last
+     * tick. Every piece of state that would have named the fault -- a consumer
+     * that never came up, a producer parked on a full ring -- lived in this
+     * struct and was printed nowhere. `run` is the consumer's own liveness
+     * flag, so `run=0` past the first tick is the whole diagnosis. */
+    if (ch->flipper.gx_queue != NULL) {
+      const GxQueue *q = ch->flipper.gx_queue;
+      int qn = snprintf(buf, sizeof(buf),
+                        "  gxq depth=%u run=%u wedged=%u stalls=%u spins=%u "
+                        "idle=%d writes=%llu\n",
+                        gxq_depth(q), q->running, q->wedged,
+                        (unsigned)q->stalls, (unsigned)q->stall_spins,
+                        g_render_idle_spins,
+                        (unsigned long long)ch->flipper.gx_writes);
+      sceIoWrite(fd, buf, (SceSize)(qn > 0 ? qn : 0));
+    }
     /* What the GXM backend has actually drawn, every tick.
      *
      * gx_gxm_report() existed from the day the backend did and had no caller
@@ -870,11 +895,22 @@ static int audio_worker(SceSize args, void *argp) {
  * CPU1 is the display thread's core and the display thread sleeps 100 ms at
  * a time once GXM is up, so this has it to itself. */
 static GxQueue g_gxq;
-static volatile int g_render_idle_spins;
+/* spawn() starts every thread with sceKernelStartThread(tid, 0, NULL), so a
+ * thread here never receives an argument and argp is always NULL. Taking the
+ * chassis through argp cost a run: the render thread dereferenced NULL on its
+ * first pump and died, the producer filled the ring and span on it forever,
+ * and the console went quiet with an empty boot.log and no core dump -- which
+ * reads like a hang in the queue and was a null pointer. */
+static Chassis *g_render_ch;
 
 static int render_worker(SceSize args, void *argp) {
-  Chassis *ch = (Chassis *)argp;
+  Chassis *ch = g_render_ch;
   (void)args;
+  (void)argp;
+  if (ch == NULL || ch->gx == NULL) {
+    log_line("render thread: no chassis, not starting");
+    return 0;
+  }
   pin_self(AFFINITY_CPU1, "render");
   log_line("render thread up");
   g_gxq.running = 1u;
@@ -1094,6 +1130,7 @@ no_gfx:
        * so it is sized to absorb a burst rather than to throttle. */
       u8 *ring = (u8 *)vita_rw("gv-gxq", 4u * 1024u * 1024u, &uid);
       if (ring != NULL && gxq_init(&g_gxq, ring, 4u * 1024u * 1024u)) {
+        g_render_ch = &ch;
         chassis_set_gx_queue(&ch, &g_gxq);
         spawn("render", render_worker, AFFINITY_CPU1);
         log_line("render thread enabled by " GPUTHREAD_FLAG);

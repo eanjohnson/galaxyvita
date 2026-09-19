@@ -1,7 +1,5 @@
 #include "gx_queue.h"
 
-#include "gx_cp.h"
-
 #include <string.h>
 
 int gxq_init(GxQueue *q, u8 *storage, u32 size) {
@@ -28,7 +26,10 @@ static u32 producer_free(GxQueue *q) {
 
 void gxq_push(GxQueue *q, u64 value, u8 size) {
   u8 i;
+  if (q->wedged)
+    return;
   if (producer_free(q) < (u32)size + 1u) {
+    q->stall_spins_at_entry = q->stall_spins;
     /* Publish before waiting: the consumer may be idle precisely because the
      * bytes that would unblock it are still sitting unpublished. */
     gxq_publish(q);
@@ -37,7 +38,13 @@ void gxq_push(GxQueue *q, u64 value, u8 size) {
       q->tail_cache = __atomic_load_n(&q->tail, __ATOMIC_ACQUIRE);
       if (producer_free(q) >= (u32)size + 1u)
         break;
-      q->stall_spins++;
+      /* A live consumer drains a full ring in milliseconds. This many spins
+       * is seconds of doing nothing else, which only happens when there is
+       * no consumer left to wait for. */
+      if (++q->stall_spins - q->stall_spins_at_entry > GXQ_STALL_LIMIT) {
+        q->wedged = 1u;
+        return;
+      }
     }
   }
   for (i = 0; i < size; ++i)
@@ -66,25 +73,4 @@ u32 gxq_depth(const GxQueue *q) {
   const u32 head = __atomic_load_n(&q->head, __ATOMIC_ACQUIRE);
   const u32 tail = __atomic_load_n(&q->tail, __ATOMIC_ACQUIRE);
   return head - tail;
-}
-
-/* The render thread's whole body, minus the thread.
- *
- * Kept here rather than in the Vita host so the loop that feeds the command
- * processor is the same code the ring test can drive, and so nothing about
- * the ordering lives in a file only the console compiles.
- *
- * Returns the bytes consumed this call, 0 when the ring is empty. */
-u32 gx_render_pump(GxQueue *q, struct GxCp *gx) {
-  const u8 *p = NULL;
-  u32 n = gxq_peek(q, &p);
-  if (n == 0u)
-    return 0u;
-  gx_cp_write_stream(gx, p, n);
-  /* Retire only after the parse has finished with the bytes: the producer
-   * may overwrite anything at or past the published tail the moment it sees
-   * it move, and the command processor copies out of this buffer as it goes
-   * rather than before it starts. */
-  gxq_consume(q, n);
-  return n;
 }

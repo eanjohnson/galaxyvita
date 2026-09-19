@@ -18,6 +18,7 @@
  */
 
 #include "gx_cp.h"
+#include "gx_queue.h"
 #include "moderngekko/phase_hook.hpp"
 
 /* Zero until the chassis wires them up, and zero is CHASSIS_PH_GUEST, which
@@ -623,4 +624,26 @@ int gx_cp_take_token(GxCp *cp, u32 *token)
     *token = cp->pe_token;
   return 1;
 }
+}
+
+/* The render thread's whole body, minus the thread.
+ *
+ * Kept here rather than in the Vita host so the loop that feeds the command
+ * processor is the same code the ring test can drive, and so nothing about
+ * the ordering lives in a file only the console compiles.
+ *
+ * Returns the bytes consumed this call, 0 when the ring is empty. */
+u32 gx_render_pump(GxQueue *q, GxCp *gx)
+{
+  const u8 *p = NULL;
+  u32 n = gxq_peek(q, &p);
+  if (n == 0u)
+    return 0u;
+  gx_cp_write_stream(gx, p, n);
+  /* Retire only after the parse has finished with the bytes: the producer
+   * may overwrite anything at or past the published tail the moment it sees
+   * it move, and the command processor copies out of this buffer as it goes
+   * rather than before it starts. */
+  gxq_consume(q, n);
+  return n;
 }

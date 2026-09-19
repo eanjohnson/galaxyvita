@@ -3,6 +3,10 @@
 
 #include "common/types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* The write-gather pipe, decoupled from the thread that fills it.
  *
  * Every byte the guest writes to 0xCC008000 is parsed, vertex-loaded and
@@ -44,6 +48,7 @@
  * consumer cannot be left holding unpublished bytes the guest is waiting on. */
 
 #define GXQ_PUBLISH_EVERY 32u
+#define GXQ_STALL_LIMIT 200000000u
 
 typedef struct GxQueue {
   u8 *buf;
@@ -57,6 +62,7 @@ typedef struct GxQueue {
   u32 since_pub;
   u64 stalls;        /* pushes that had to wait for the consumer */
   u64 stall_spins;
+  u64 stall_spins_at_entry;
   /* Consumer-private. */
   u32 tail_local;
   /* Set by the consumer when the parse produced a PE event, cleared by the
@@ -64,6 +70,12 @@ typedef struct GxQueue {
   volatile u32 events;
   volatile u32 quit;
   volatile u32 running;
+  /* Set when the producer has waited far longer than a live consumer could
+   * ever take. A consumer that dies leaves the producer spinning on a full
+   * ring forever, and an unattended console that hangs costs a power cycle
+   * and reports nothing -- so the wait is bounded and the run goes visibly
+   * wrong instead of invisibly quiet. */
+  volatile u32 wedged;
 } GxQueue;
 
 /* size must be a power of two. Returns 0 on allocation failure. */
@@ -80,5 +92,9 @@ u32 gxq_depth(const GxQueue *q);
  * retire it. Returns the bytes consumed, 0 when the ring is empty. */
 struct GxCp;
 u32 gx_render_pump(GxQueue *q, struct GxCp *gx);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
