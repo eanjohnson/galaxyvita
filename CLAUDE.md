@@ -150,6 +150,21 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   and if a change genuinely needs to be resolved at that size, run each side
   more than once before believing either. This floor was established by
   accident after five A/Bs had already been run and published.
+- **VI/s stops being a clock the moment a change moves work off the emulation
+  thread.** The figure of merit here is emulated retraces per real second, and
+  it has been the right one for every A/B in this project because every one of
+  them compared two builds that kept the guest equally busy. Move the GX stack
+  to another thread and it inverts: the guest waits inside `OS_IDLE_WAIT`, the
+  idle fold credits that span forward to the next scheduled event, VI retraces
+  *are* scheduled events, and so emulated time races ahead precisely when
+  nothing is being drawn. The threaded run measured **5.50 VI/s against 2.50**
+  and was **nineteen times slower** -- 180 KB of GX commands in 580 s where the
+  same eboot with the thread off did it in 30. Nothing about the VI number was
+  wrong; it answered the question it is built to answer. Before quoting VI/s,
+  ask whether the change can alter how much emulated time passes per unit of
+  guest progress. If it can, quote bytes decoded, draws, or dispatches per real
+  second alongside it, and say which one the conclusion rests on.
+
 - **A matched retrace is not a matched workload; check the draw count at the
   window boundary.** Two passes of the same eboot with the same `input.txt`
   came out 2.2x apart at retraces 800-1100, which no graphics change could do.

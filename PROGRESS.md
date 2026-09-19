@@ -2,6 +2,68 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-19 — The render thread is 19x slower, and VI/s called it 2.2x faster
+
+The whole GX stack -- FIFO parse, display-list replay, vertex load, GXM
+submission, EFB copy -- moved off the emulated CPU's thread onto CPU1, fed by
+a 4 MiB SPSC byte ring with release/acquire publication. At retraces 1400-2000
+that was 96.3 s of a 266 s window sitting inside the guest's own stores, and
+the hope was to overlap it with the 125 s of recompiled code beside it.
+
+**It does not overlap. It serialises, and much worse than before.** One eboot,
+two passes, `gputhread.txt` the only difference:
+
+| | GX bytes decoded | wall clock to get there | VI retraces spent |
+|---|---|---|---|
+| thread off | 180 KB | 30 s | ~60 |
+| thread on | 180 KB | 580 s | 3,091 |
+
+Nineteen times slower at matched graphics work, and fifty times more emulated
+time spent doing it.
+
+**The `speed` line reported the threaded run at 5.50 VI/s against 2.50.** That
+is not a bug in the measurement, it is the measurement working as designed on a
+run where it does not mean what it usually means. The guest spends the stall
+inside `OS_IDLE_WAIT`; the idle fold credits the span to the next scheduled
+event; VI retraces are scheduled events, so emulated time races ahead while
+nothing is drawn. Every device A/B before this one compared two builds that
+kept the guest equally busy, so VI/s was a fair clock. This one does not, and
+the draws-per-second and raw byte counters put in for exactly this reason are
+what caught it. `render_behind()` already refuses to fold while the ring is
+non-empty; the ring is *empty* almost all the time here, because the producer
+is the thing that has stopped.
+
+Where the time goes, from the two phase histograms in one run:
+
+    emulation thread   idle 439,988   guest 23,992   gx 25
+    render thread      gxcopy 461,020  gxsub 1,222   gxvtx 1
+
+94% of the consumer is inside the EFB-copy callback and 90% of the producer is
+waiting for it. With ~30 draw-dones over the window that is seconds per copy,
+not slow work -- it is a block. `present()` no longer does an unconditional
+`gxm_finish()` (that moved behind `gpusync.txt` and the pass ran with it
+absent), so what blocks is inside `gxm_end_scene_fenced` or the display queue
+behind it. The next run measures it rather than guessing: `gx_cp_copies()` now
+counts callbacks, so profiler samples divided by copies is milliseconds each.
+
+The leading hypothesis is core contention. CPU1 carries the display thread,
+which is what retires GXM display-queue frames, and the consumer blocks inside
+`sceGxmEndScene` without ever yielding while it still has bytes to parse -- so
+a full queue and a starved retirer can hold each other up indefinitely.
+`rendercpu2.txt` moves the consumer to CPU2, which carries only audio-io, the
+watchdog and the profiler, all nearly idle. One run settles it.
+
+Two things worth keeping regardless of how that comes out. The host gate could
+never have caught this: the host has no input replay, never leaves the strap
+screen, and its threaded run reproduced all 39 dumped frames byte-for-byte
+while the console stalled in the first thirty seconds of real drawing. And the
+first attempt at this run died with an empty log and no core dump, because
+`spawn()` passes `sceKernelStartThread(tid, 0, NULL)` and the worker took its
+chassis from `argp`; the ring now reports its consumer's liveness on its own
+watchdog line, and `run=1 wedged=0 stalls=0` is what said the repair had taken.
+
+The render thread stays off by default.
+
 ## 2026-09-19 — Display-list replay is 57% of the bytes and 1.5% of the time
 
 The watchdog's new byte counters said 290 MB of FIFO stream against 386 MB
