@@ -6,6 +6,9 @@
 #include "chassis.h"
 #include "gx_soft.h"
 #include "gx_cp.h"
+#include "gx_queue.h"
+#include <pthread.h>
+#include <sched.h>
 
 #include <stdio.h>
 #include <signal.h>
@@ -172,6 +175,21 @@ static void on_trace_signal(int sig) {
   _exit(1);
 }
 
+static GxQueue g_host_gxq;
+static Chassis *g_host_ch;
+static pthread_t g_host_render;
+
+static void *host_render(void *arg) {
+  (void)arg;
+  while (!g_host_gxq.quit) {
+    if (gx_render_pump(&g_host_gxq, g_host_ch->gx) == 0u)
+      sched_yield();
+  }
+  while (gx_render_pump(&g_host_gxq, g_host_ch->gx) != 0u)
+    ;
+  return NULL;
+}
+
 int main(int argc, char **argv) {
   const char *dol = argc > 1 ? argv[1] : "generated/extracted/identity/sys/main.dol";
   u32 cap = argc > 2 ? (u32)strtoul(argv[2], NULL, 10) : 50000u;
@@ -316,11 +334,37 @@ int main(int argc, char **argv) {
    * sides of it have to be reachable from one binary. */
   if (getenv("GV_NO_DLCACHE"))
     gx_cp_set_vertex_size_cache(ch.gx, 0);
+  /* The render thread, on the host, for the gate the console cannot give.
+   *
+   * On the device the only check available is a frame dump, which compares
+   * what the two sides drew and says nothing about why. Here the same ring
+   * and the same pump feed the software rasteriser, so the run can be put
+   * under ThreadSanitizer and the frames compared byte for byte against the
+   * synchronous build. The host never executes a display list, so this does
+   * not cover the hazard that motivated the design -- it covers the ordering
+   * that would break everything else. */
+  if (getenv("GV_GPU_THREAD")) {
+    static u8 ring[4u * 1024u * 1024u];
+    if (gxq_init(&g_host_gxq, ring, sizeof(ring))) {
+      g_host_ch = &ch;
+      chassis_set_gx_queue(&ch, &g_host_gxq);
+      if (pthread_create(&g_host_render, NULL, host_render, NULL) != 0) {
+        fprintf(stderr, "render thread failed to start\n");
+        return 1;
+      }
+      fprintf(stderr, "render thread on\n");
+    }
+  }
   prof_start();
   if (!chassis_load_dol(&ch, dol))
     return 1;
 
   chassis_run(&ch, cap);
+  if (g_host_gxq.buf != NULL) {
+    gxq_publish(&g_host_gxq);
+    g_host_gxq.quit = 1u;
+    pthread_join(g_host_render, NULL);
+  }
   printf("stop=%s hits=%u misses=%u fifo=%u ea=0x%08x pc=0x%08x "
          "mmio_r=%u mmio_w=%u smc=%u last=0x%08x retrace=%u gx=%u\n",
          chassis_stop_name(ch.stop_reason), ch.dispatch_hits, ch.dispatch_misses,

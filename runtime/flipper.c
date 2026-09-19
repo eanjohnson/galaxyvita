@@ -2,6 +2,7 @@
 
 #include "cpu/cpu.h"
 #include "gx_cp.h"
+#include "gx_queue.h"
 #include "ios.h"
 
 #include <string.h>
@@ -373,6 +374,17 @@ static void sync_vi_irq(Flipper *f) {
     f->pi_cause &= ~PI_CAUSE_VI;
 }
 
+void flipper_pe_poll(Flipper *f, GxCp *gx) {
+  if (f->gx_queue == NULL || gx == NULL)
+    return;
+  /* Publish first. The head is only pushed out every 32 writes, so a guest
+   * that wrote a GXDrawDone and then went to sleep may be holding the very
+   * command it is waiting on. */
+  gxq_publish(f->gx_queue);
+  if (gx_cp_events_pending(gx))
+    pe_drain(f, gx);
+}
+
 void flipper_advance(Flipper *f, u64 cycles) {
   f->cycles += cycles;
   ai_advance(f, cycles);
@@ -574,7 +586,16 @@ static void write_flipper(Flipper *f, CPUState *cpu, GxCp *gx, u32 off,
       }
       return;
     }
-    if (gx) {
+    if (f->gx_queue != NULL) {
+      /* The render thread owns the command processor. This copies and gets
+       * out; the parse, the vertex load and the GXM submission all happen on
+       * CPU1, and the PE events they produce come back through the counters
+       * rather than out of this call. */
+      gxq_push(f->gx_queue, value, size);
+      f->gx_writes++;
+      if (gx != NULL && gx_cp_events_pending(gx))
+        pe_drain(f, gx);
+    } else if (gx) {
       /* Only drain when the write actually produced one. Draining is three
        * calls into the CP and an interrupt recompute, and this is the hottest
        * store in the game: 96M of the 96M MMIO writes in a 720 s run land
@@ -813,6 +834,14 @@ static void write_hollywood(Flipper *f, CPUState *cpu, u32 off, u64 value,
 u64 flipper_read(Flipper *f, u32 ea, u8 size) {
   u32 off = 0;
   int hw = 0;
+  /* Publish before answering. The head is only pushed out every 32 writes to
+   * keep a barrier off the hottest store in the game, and a guest that is
+   * spinning on GXDrawDone reads a register instead of writing one -- so
+   * without this the consumer can be waiting for bytes that exist and the
+   * guest can be waiting for the consumer, indefinitely. Every Flipper read
+   * is a point where the guest might be doing exactly that. */
+  if (f->gx_queue != NULL)
+    gxq_publish(f->gx_queue);
   note_ea(f, ea);
   if (!classify(ea, &off, &hw))
     return 0;

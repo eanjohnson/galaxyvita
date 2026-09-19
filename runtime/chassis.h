@@ -104,6 +104,12 @@ typedef struct Chassis {
    * but it is guest code doing nothing, and how much of the run it owns is
    * the whole case for idle-skip. */
   volatile u8 phase;
+  /* The render thread's own slot. Two threads sharing one byte would report
+   * a breakdown of neither: the sampler would be told what some thread was
+   * doing. With the render thread off this stays at CHASSIS_PH_GUEST and the
+   * sampler's second histogram is all-zero, which is what a run with no
+   * render thread should look like. */
+  volatile u8 render_phase;
   u32 last_lr;
   u32 last_ctr;
   u32 ran_from;
@@ -193,6 +199,12 @@ const char *chassis_stop_name(int reason);
 u32 chassis_top_pcs(const Chassis *ch, u32 *out_pc, u32 *out_hits, u32 n);
 /* Hand the Wii Remote model the player's current state. The next 200 Hz report
  * carries it, so a host can call this whenever its own pad is sampled. */
+/* Hand the command processor to a render thread. The chassis keeps owning
+ * the GxCp -- it is the render thread that now touches it -- and the FIFO
+ * writes become queue pushes. Must be called before chassis_run, and the
+ * caller owns both the queue and the thread. */
+void chassis_set_gx_queue(Chassis *ch, struct GxQueue *q);
+
 void chassis_set_input(Chassis *ch, const BtInput *in);
 /* Sample the host's pad from inside the run loop instead. Either may be used;
  * the callback wins, because it runs last. */

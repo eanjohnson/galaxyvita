@@ -1,4 +1,5 @@
 #include "chassis.h"
+#include "gx_queue.h"
 #include "hle_hooks.h"
 #include "frontend/container/dol.h"
 #include "generated.h"
@@ -1270,6 +1271,28 @@ int chassis_load_dol(Chassis *ch, const char *path) {
  * bounded skip of it gains 2-5%, and at a bound somewhere between 64 and 256
  * the boot stops progressing entirely for reasons nobody has explained. A gain
  * that small does not buy a cliff that sharp. */
+/* Whether the render thread still holds commands the guest may be waiting on.
+ *
+ * The idle fold credits emulated time straight to the next scheduled event,
+ * and a scheduled event is a decrementer, a retrace or a remote sample --
+ * never "the GP finished". With the command processor on this thread that was
+ * fine, because a GXDrawDone completed inside the store that wrote it. With
+ * it on another one the completion takes real time, and the fold turns any
+ * amount of real time into an unbounded amount of emulated time: the guest
+ * sleeps, the clock jumps a frame, it wakes, the draw still is not done, and
+ * it sleeps again. The first threaded run reached its retrace cap having
+ * dispatched 28% fewer blocks and issued 1.5% of the FIFO writes -- an
+ * emulated machine idling at full speed while the renderer was still working.
+ *
+ * So the queue is a scheduled event too. While anything is in flight the
+ * fold is off and the idle loop is dispatched normally, which bounds the
+ * emulated clock to the render thread's progress at exactly the moment that
+ * costs nothing -- the guest has nothing else to do. */
+static int render_behind(const Chassis *ch) {
+  return ch->flipper.gx_queue != NULL &&
+         gxq_depth(ch->flipper.gx_queue) != 0u;
+}
+
 static void advance_time(Chassis *ch, s64 used) {
   ch->phase = CHASSIS_PH_DISPATCH;
   if (used < 1)
@@ -1300,6 +1323,7 @@ static void advance_time(Chassis *ch, s64 used) {
   ch->phase = CHASSIS_PH_IOS;
   ios_bt_service(&ch->ios, &ch->flipper, &ch->cpu);
   flipper_advance(&ch->flipper, (u64)used);
+  flipper_pe_poll(&ch->flipper, ch->gx);
   maybe_irq(ch);
   ch->phase = CHASSIS_PH_DISPATCH;
 }
@@ -1449,6 +1473,7 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
     int folded = 0;
     if (pc == OS_IDLE_WAIT && ch->idle_skip && ch->idle_used != 0u &&
         ((ch->idle_skips + ch->idle_checks) % IDLE_RECHECK) != 0u &&
+        !render_behind(ch) &&
         mem_read32(&ch->cpu,
                    ch->cpu.gpr[13] + (u32)(s32)OS_IDLE_RUNQ_OFF) == 0u)
       folded = 1;
@@ -1600,6 +1625,18 @@ const char *chassis_stop_name(int reason) {
   default:
     return "running";
   }
+}
+
+void chassis_set_gx_queue(Chassis *ch, struct GxQueue *q) {
+  if (ch == NULL)
+    return;
+  ch->flipper.gx_queue = q;
+  /* The GX stack's phase writes have to follow the thread that runs it.
+   * Leaving them pointed at ch->phase would have two threads storing to one
+   * byte, and the sampler would report a breakdown of neither. */
+  gx_cp_set_phase_slot(q != NULL ? &ch->render_phase : &ch->phase, CHASSIS_PH_GX,
+                       CHASSIS_PH_GXVTX, CHASSIS_PH_GXSUB, CHASSIS_PH_GXCOPY,
+                       CHASSIS_PH_GXDL);
 }
 
 void chassis_set_input(Chassis *ch, const BtInput *in) { ch->ios.bt.input = *in; }

@@ -203,16 +203,16 @@ struct GxCp final
     switch (command)
     {
     case kBpSetDrawDone:
-      pe_finish = true;
+      __atomic_add_fetch(&pe_finish_n, 1u, __ATOMIC_RELEASE);
       break;
     case kBpTokenValue:
       pe_token = value & 0xFFFFu;
-      pe_token_set = true;
+      __atomic_add_fetch(&pe_token_n, 1u, __ATOMIC_RELEASE);
       break;
     case kBpTokenInterrupt:
       pe_token = value & 0xFFFFu;
-      pe_token_set = true;
-      pe_token_irq = true;
+      __atomic_add_fetch(&pe_token_n, 1u, __ATOMIC_RELEASE);
+      __atomic_add_fetch(&pe_token_irq_n, 1u, __ATOMIC_RELEASE);
       break;
     case kBpCopyExecute:
       /* Passed on raw: the rasteriser reads the copy-to-XFB and clear bits out
@@ -354,8 +354,18 @@ struct GxCp final
   std::uint64_t undecoded = 0;
   std::uint8_t last_opcode = 0;
 
-  bool pe_finish = false;
-  bool pe_token_set = false;
+  /* Counters, not flags, because the setter and the taker are different
+   * threads once the render thread is on. A flag set by the consumer at the
+   * moment the producer clears it is an event that never happened, and the
+   * event in question is GXDrawDone -- so the symptom is the guest waiting
+   * forever, hours in, with nothing to see. A counter the consumer only ever
+   * increments and the producer only ever reads cannot lose one. */
+  volatile std::uint32_t pe_finish_n = 0;
+  volatile std::uint32_t pe_token_n = 0;
+  volatile std::uint32_t pe_token_irq_n = 0;
+  std::uint32_t pe_finish_taken = 0;
+  std::uint32_t pe_token_taken = 0;
+  std::uint32_t pe_token_irq_taken = 0;
   bool desync_reported = false;
   std::uint64_t dls = 0;
   std::uint64_t dl_bytes = 0;
@@ -364,8 +374,7 @@ struct GxCp final
   const char *trace_path = nullptr;
   std::uint32_t traced = 0;
   std::uint64_t writes = 0;
-  bool pe_token_irq = false;
-  std::uint32_t pe_token = 0;
+  volatile std::uint32_t pe_token = 0;
 };
 
 namespace
@@ -421,10 +430,29 @@ void gx_cp_reset(GxCp *cp)
   cp->vertices = 0;
   cp->draws = 0;
   cp->undecoded = 0;
-  cp->pe_finish = false;
-  cp->pe_token_set = false;
-  cp->pe_token_irq = false;
+  cp->pe_finish_n = 0;
+  cp->pe_token_n = 0;
+  cp->pe_token_irq_n = 0;
+  cp->pe_finish_taken = 0;
+  cp->pe_token_taken = 0;
+  cp->pe_token_irq_taken = 0;
   cp->pe_token = 0;
+}
+
+void gx_cp_write_stream(GxCp *cp, const u8 *bytes, u32 count)
+{
+  if (cp == nullptr || bytes == nullptr || count == 0u)
+    return;
+  cp->bytes_in += count;
+  if (cp->trace != nullptr)
+  {
+    for (std::uint32_t i = 0; i < count && cp->traced < kTraceBytes; ++i)
+      cp->trace[cp->traced++] = bytes[i];
+  }
+  /* `writes` stays a count of guest stores and this path has lost that --
+   * the ring hands over bytes, not stores. The producer counts them instead,
+   * so the two never disagree about what they mean. */
+  cp->processor.WriteBytes(std::span<const std::uint8_t>{bytes, count});
 }
 
 int gx_cp_write(GxCp *cp, u64 value, u8 size)
@@ -458,7 +486,18 @@ int gx_cp_write(GxCp *cp, u64 value, u8 size)
     std::fflush(stderr);
     cp->DumpNotes();
   }
-  return (cp->pe_token_set || cp->pe_token_irq || cp->pe_finish) ? 1 : 0;
+  return gx_cp_events_pending(cp);
+}
+
+int gx_cp_events_pending(const GxCp *cp)
+{
+  if (cp == nullptr)
+    return 0;
+  return (__atomic_load_n(&cp->pe_token_n, __ATOMIC_ACQUIRE) != cp->pe_token_taken ||
+          __atomic_load_n(&cp->pe_token_irq_n, __ATOMIC_ACQUIRE) != cp->pe_token_irq_taken ||
+          __atomic_load_n(&cp->pe_finish_n, __ATOMIC_ACQUIRE) != cp->pe_finish_taken)
+             ? 1
+             : 0;
 }
 
 u64 gx_cp_display_lists(const GxCp *cp) { return cp ? cp->dls : 0; }
@@ -549,25 +588,37 @@ u64 gx_cp_bytes_in(const GxCp *cp) { return cp != nullptr ? cp->bytes_in : 0u; }
 
 int gx_cp_take_finish(GxCp *cp)
 {
-  if (cp == nullptr || !cp->pe_finish)
+  if (cp == nullptr)
     return 0;
-  cp->pe_finish = false;
+  const std::uint32_t n = __atomic_load_n(&cp->pe_finish_n, __ATOMIC_ACQUIRE);
+  if (n == cp->pe_finish_taken)
+    return 0;
+  cp->pe_finish_taken = n;
   return 1;
 }
 
 int gx_cp_take_token_irq(GxCp *cp)
 {
-  if (cp == nullptr || !cp->pe_token_irq)
+  if (cp == nullptr)
     return 0;
-  cp->pe_token_irq = false;
+  const std::uint32_t n = __atomic_load_n(&cp->pe_token_irq_n, __ATOMIC_ACQUIRE);
+  if (n == cp->pe_token_irq_taken)
+    return 0;
+  cp->pe_token_irq_taken = n;
   return 1;
 }
 
 int gx_cp_take_token(GxCp *cp, u32 *token)
 {
-  if (cp == nullptr || !cp->pe_token_set)
+  if (cp == nullptr)
     return 0;
-  cp->pe_token_set = false;
+  const std::uint32_t n = __atomic_load_n(&cp->pe_token_n, __ATOMIC_ACQUIRE);
+  if (n == cp->pe_token_taken)
+    return 0;
+  /* Only the newest value survives a drain, and that is what the hardware
+   * does too: PE_TOKEN is a register holding the last token written, not a
+   * queue. What must not be lost is the interrupt, and that is a counter. */
+  cp->pe_token_taken = n;
   if (token != nullptr)
     *token = cp->pe_token;
   return 1;

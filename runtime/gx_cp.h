@@ -50,6 +50,12 @@ void gx_cp_reset(GxCp *cp);
  * game writes millions of other bytes between them -- and the caller used to
  * ask three times, across the C++ boundary, after every four-byte store. */
 int gx_cp_write(GxCp *cp, u64 value, u8 size);
+/* The same stream, as a byte run. This is what the render thread feeds from
+ * the ring; the per-write form is the synchronous path's. */
+void gx_cp_write_stream(GxCp *cp, const u8 *bytes, u32 count);
+/* Whether the parse has produced a PE event the Flipper has not retired.
+ * Safe to call from the producer thread while the consumer is parsing. */
+int gx_cp_events_pending(const GxCp *cp);
 void gx_cp_set_sink(GxCp *cp, const GxSink *sink);
 
 /* Where the GX stack publishes which part of itself is running, for a sampler

@@ -92,6 +92,7 @@ add_executable(galaxyvita
   "${CMAKE_BINARY_DIR}/link_pad.s"
   runtime/chassis.c
   runtime/flipper.c
+  runtime/gx_queue.c
   runtime/gx_cp.cpp
   runtime/gx_texture.c
   # ModernGekko's GPU stack: the FIFO decoder, the register files and the

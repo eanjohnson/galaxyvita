@@ -5,6 +5,7 @@
 
 struct CPUState;
 struct GxCp;
+struct GxQueue;
 struct Ios;
 
 enum { FLIPPER_MMIO_TRACE = 48 };
@@ -19,6 +20,10 @@ typedef struct Flipper {
    * look identical from outside. Counting the edges separates them and names
    * the source. */
   u32 irq_count[6];
+  /* Non-NULL once the render thread owns the command processor; the FIFO
+   * writes are copied here instead of being parsed inline. */
+  struct GxQueue *gx_queue;
+  u64 gx_writes;
   u32 pi_fifo_base;
   u32 pi_fifo_end;
   u32 pi_fifo_wptr;
@@ -87,6 +92,16 @@ typedef struct Flipper {
 int flipper_is_mmio(u32 ea);
 void flipper_init(Flipper *f);
 void flipper_advance(Flipper *f, u64 cycles);
+
+/* Retire any PE events the render thread has produced since the last call.
+ *
+ * With the command processor on this thread an event could only ever appear
+ * inside a FIFO write, so checking there was enough. With it on another one
+ * the event arrives whenever the parse reaches it -- and the guest that is
+ * waiting for it has, by definition, stopped writing. So this has to be
+ * polled from somewhere that runs while the guest is doing nothing, which is
+ * the slice boundary. Cheap and a no-op with no queue attached. */
+void flipper_pe_poll(Flipper *f, struct GxCp *gx);
 u64 flipper_read(Flipper *f, u32 ea, u8 size);
 void flipper_write(Flipper *f, struct CPUState *cpu, struct GxCp *gx, u32 ea,
                    u64 value, u8 size);

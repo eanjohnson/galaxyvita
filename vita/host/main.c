@@ -1,5 +1,6 @@
 /* GalaxyVita CoreHost Phase 4: AOT + Flipper HLE + the sceGxm backend. */
 #include "chassis.h"
+#include "gx_queue.h"
 #include "gx_gxm.h"
 #include "gxm.h"
 #include "profiler.h"
@@ -48,6 +49,7 @@
 #define NOSKIP_FLAG "ux0:data/galaxyvita/noskip.txt"
 #define GPUSYNC_FLAG "ux0:data/galaxyvita/gpusync.txt"
 #define NODLCACHE_FLAG "ux0:data/galaxyvita/nodlcache.txt"
+#define GPUTHREAD_FLAG "ux0:data/galaxyvita/gputhread.txt"
 /* Where the sampling profiler leaves its guest-PC histogram. */
 #define PROF_PC_PATH "ux0:data/galaxyvita/prof-pc.txt"
 /* Buttons to hold down without anyone holding them. The boot is gated by
@@ -852,6 +854,48 @@ static int audio_worker(SceSize args, void *argp) {
   return 0;
 }
 
+/* The render thread.
+ *
+ * Everything the GX stack does -- FIFO parse, display-list replay, vertex
+ * load, GXM submission, copy and present -- used to run inside the emulated
+ * CPU's store to the write-gather pipe, on CPU0, where none of it could
+ * overlap the recompiled guest code next to it. At retraces 1400-2000 that
+ * was 96.3 s of a 266 s window against 125 s of guest.
+ *
+ * Nothing about the GX stack changes to run here; what changes is which
+ * thread calls it, and that the guest's GXDrawDone and draw-sync tokens are
+ * now raised where the command is parsed rather than where it was written.
+ * See gx_queue.h for why that is the barrier that makes it safe.
+ *
+ * CPU1 is the display thread's core and the display thread sleeps 100 ms at
+ * a time once GXM is up, so this has it to itself. */
+static GxQueue g_gxq;
+static volatile int g_render_idle_spins;
+
+static int render_worker(SceSize args, void *argp) {
+  Chassis *ch = (Chassis *)argp;
+  (void)args;
+  pin_self(AFFINITY_CPU1, "render");
+  log_line("render thread up");
+  g_gxq.running = 1u;
+  while (!g_gxq.quit) {
+    if (gx_render_pump(&g_gxq, ch->gx) == 0u) {
+      /* Nothing to do. Yield rather than spin: the producer is on another
+       * core and a busy wait here costs it nothing directly, but it does
+       * hold the core at full clock for no work and this run is long. */
+      g_render_idle_spins++;
+      sceKernelDelayThread(100);
+    }
+  }
+  /* Drain whatever the guest published before it stopped, so the last frames
+   * are not lost and the counters at the end of the run are complete. */
+  while (gx_render_pump(&g_gxq, ch->gx) != 0u)
+    ;
+  g_gxq.running = 0u;
+  log_line("render thread down");
+  return 0;
+}
+
 static SceUID spawn_sized(const char *name, SceKernelThreadEntry entry,
                           int affinity, int stack) {
   SceUID tid = sceKernelCreateThread(name, entry, 0x40, stack, 0, affinity, NULL);
@@ -1040,11 +1084,39 @@ no_gfx:
     }
   }
   {
+    SceIoStat gst;
+    memset(&gst, 0, sizeof(gst));
+    if (sceIoGetstat(GPUTHREAD_FLAG, &gst) >= 0) {
+      SceUID uid = -1;
+      /* 4 MiB is about twenty-four frames of stream at the observed 168 KB a
+       * frame. The ring size is not what bounds how far behind the render
+       * thread runs -- the guest's own GXDrawDone does that, twice a frame --
+       * so it is sized to absorb a burst rather than to throttle. */
+      u8 *ring = (u8 *)vita_rw("gv-gxq", 4u * 1024u * 1024u, &uid);
+      if (ring != NULL && gxq_init(&g_gxq, ring, 4u * 1024u * 1024u)) {
+        chassis_set_gx_queue(&ch, &g_gxq);
+        spawn("render", render_worker, AFFINITY_CPU1);
+        log_line("render thread enabled by " GPUTHREAD_FLAG);
+      } else {
+        log_line("render thread requested but the ring would not allocate");
+      }
+    }
+  }
+  {
     u32 cap = read_block_cap();
     char line[64];
     snprintf(line, sizeof(line), "block cap = %u", (unsigned)cap);
     log_line(line);
     chassis_run(&ch, cap);
+  }
+  if (g_gxq.buf != NULL) {
+    /* The guest has stopped, so no more bytes can arrive; publish what is
+     * left and wait for the render thread to swallow it before anything
+     * reports a counter. */
+    gxq_publish(&g_gxq);
+    g_gxq.quit = 1u;
+    while (g_gxq.running)
+      sceKernelDelayThread(1000);
   }
 
   snprintf(buf, sizeof(buf),

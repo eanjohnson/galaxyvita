@@ -35,6 +35,7 @@ CSRC=(
   "$ROOT/runtime/gx_texture.c"
   "$ROOT/runtime/chassis.c"
   "$ROOT/runtime/flipper.c"
+  "$ROOT/runtime/gx_queue.c"
   "$ROOT/runtime/ios.c"
   "$ROOT/runtime/bt.c"
   "$ROOT/runtime/disc.c"
@@ -63,7 +64,7 @@ for f in "${CXXSRC[@]}"; do
   COBJS+=("$o")
 done
 
-g++ -O2 -o "$OUT/aot_chassis" "${COBJS[@]}" "${OBJS[@]}" -lm
+g++ -O2 -o "$OUT/aot_chassis" "${COBJS[@]}" "${OBJS[@]}" -lm -lpthread
 
 echo "==> $OUT/aot_chassis $DOL cap=$CAP"
 "$OUT/aot_chassis" "$DOL" "$CAP"

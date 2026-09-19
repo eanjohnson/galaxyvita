@@ -115,7 +115,13 @@ def show(path, lo, hi, by_vi=False):
     # looked like it had grown when it had halved.
     print("               " + "  ".join(f"{k}={d[k]/tot*dt:5.1f}s" for k in PH))
     # Cumulative draws at each edge, because matching on retraces is not the
-    # same as matching on workload. Two passes of one eboot with one input
+    # same as matching on workload. Draws per second is here for the render
+    # thread, where VI/s stops being sufficient on its own: with the GX stack
+    # on another thread the guest can spend emulated time waiting for it, and
+    # retraces that pass while the guest waits are cheap -- so a change that
+    # made the game slower could still read as more VI/s. Draws per real
+    # second cannot be inflated that way. Quote both, and if draws per frame
+    # has moved between the sides, neither run is measuring the other. Two passes of one eboot with one input
     # script came out 2.2x apart here, and the reason was that at frame ~1100
     # one had issued 530,006 draws and the other 1,109,774 -- the replay had
     # landed somewhere different and the game was showing less. Speed is only
@@ -125,7 +131,7 @@ def show(path, lo, hi, by_vi=False):
     if d0 is not None and d1 is not None:
         per = (d1 - d0) / max(d['frames'], 1)
         print(f"               workload draws {d0:,} -> {d1:,}"
-              f"  ({per:,.0f} per frame)")
+              f"  ({per:,.0f} per frame)  {(d1 - d0) / dt / 1000:,.1f}k draws/s")
 
 if __name__ == '__main__':
     args = sys.argv[1:]

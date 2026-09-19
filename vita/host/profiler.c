@@ -23,6 +23,11 @@ static SceUID g_thread = -1;
 static u32 g_pc[PROF_SLOTS];
 static u32 g_hits[PROF_SLOTS];
 static u32 g_phase[CHASSIS_PH_COUNT];
+/* The render thread's, sampled from the same tick. Kept separate because the
+ * two threads run at once: adding them would make the shares sum to 200% and
+ * subtracting them would hide the overlap, which is the entire point of
+ * having a render thread. All-zero when there is no render thread. */
+static u32 g_rphase[CHASSIS_PH_COUNT];
 static u32 g_samples;
 static u32 g_overflow;
 static SceUInt64 g_t0;
@@ -61,6 +66,11 @@ static int sampler(SceSize args, void *argp) {
        * thread's cost up by more than the answer is worth. */
       if (ph < CHASSIS_PH_COUNT)
         g_phase[ph]++;
+      {
+        u8 rph = ch->render_phase;
+        if (rph < CHASSIS_PH_COUNT)
+          g_rphase[rph]++;
+      }
       note_pc(ch->last_pc);
       g_samples++;
     }
@@ -128,6 +138,17 @@ void gvprof_report(char *out, unsigned n) {
    * picks the window. */
   for (u32 i = 0; i < CHASSIS_PH_COUNT && k > 0 && (unsigned)k < n; i++)
     k += snprintf(out + k, n - (unsigned)k, " %s=%u", k_name[i], g_phase[i]);
+  /* Only when there is something there: a run with no render thread should
+   * not carry eleven zeroes on every tick, and a parser that finds the block
+   * absent is reading a log from before the thread existed. */
+  if (g_rphase[CHASSIS_PH_GX] != 0u || g_rphase[CHASSIS_PH_GXVTX] != 0u ||
+      g_rphase[CHASSIS_PH_GXSUB] != 0u || g_rphase[CHASSIS_PH_GXCOPY] != 0u ||
+      g_rphase[CHASSIS_PH_GXDL] != 0u) {
+    if (k > 0 && (unsigned)k < n)
+      k += snprintf(out + k, n - (unsigned)k, " |r");
+    for (u32 i = 0; i < CHASSIS_PH_COUNT && k > 0 && (unsigned)k < n; i++)
+      k += snprintf(out + k, n - (unsigned)k, " r%s=%u", k_name[i], g_rphase[i]);
+  }
 }
 
 void gvprof_dump_pcs(const char *path, unsigned top) {
