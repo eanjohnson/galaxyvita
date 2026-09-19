@@ -250,10 +250,15 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   `s64` slice counter read-modify-written at the head of every basic block,
   holding two registers on a 32-bit machine for a value that never leaves
   [-1280, 10000]. It was the single hottest field by a factor of three, and
-  narrowing it to `s32` removed 7.4% to 10.8% of emitted instructions -- most
-  of it not the arithmetic but the freed register letting GCC keep guest
-  registers live, which is the win the 5.80% target was aiming at and could not
-  reach directly. `scripts/census-emitted.py` buckets every load in a compiled
+  narrowing it to `s32` removed 7.4% to 10.8% of emitted instructions. The
+  mechanism is worth knowing because it generalises: the field sits past offset
+  3400, `locked_cache_tag[512]` being in front of it, and Thumb-2's `ldrd`
+  reaches only `imm8<<2` -- so GCC could not use a doubleword access and
+  instead pinned a second base register across every block just to address the
+  high word. Freeing that register is most of the win; guest-register loads
+  fall 7.84% -> 6.36%, which is what the 5.80% target was aiming at and could
+  not reach directly. A wide field far down a hot struct costs more than its
+  width suggests. `scripts/census-emitted.py` buckets every load in a compiled
   chunk by the field it touches and takes seconds to run. Run it first. A
   census of the source ranks what you thought to name; a census of the
   assembly ranks what is there.
