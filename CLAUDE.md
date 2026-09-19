@@ -188,6 +188,18 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   the number covers. The corollary is that a bundle only works if every part of
   it passed its own gate first: a bundle is a measurement shortcut, never a
   correctness one.
+- **A new phase needs adding to the parser's alternation, not just its
+  display list.** `window-watchdog.py` names the phases twice: `PH` decides
+  what is printed and in what order, and a regex alternation decides what is
+  read off the `prof` line. `gxdl` went into `PH` and not into the
+  alternation, so every window printed `gxdl= 0.0s` -- for a phase whose
+  cumulative counter in the same log was climbing by 38 samples a tick. A
+  phase that reads exactly zero in every window while the run as a whole has
+  thousands of samples in it is the instrument, not the result; the two lists
+  disagreeing is the first thing to check. Worse, zero is a plausible answer
+  here -- it reads as "this phase costs nothing", which is the conclusion the
+  measurement existed to test.
+
 - **`eboot.bin` is compressed, so its size is not code size.** The -marm
   build's objects carry 19% more `.text` than the Thumb-2 build and its ELF is
   13.9% bigger -- and its `eboot.bin` is 3.2 MB *smaller*, because ARM's

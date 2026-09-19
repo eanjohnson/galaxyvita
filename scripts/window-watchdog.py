@@ -39,7 +39,7 @@ def ticks(path):
         m = re.match(r'prof samples=(\d+) over=(\d+)ms', line)
         if m:
             cur['samples'], cur['ms'] = int(m.group(1)), int(m.group(2))
-            for k, v in re.findall(r'(guest|idle|disp|gxvtx|gxsub|gxcopy|gx|ios|mmio|disc)=(\d+)', line):
+            for k, v in re.findall(r'(guest|idle|disp|gxvtx|gxsub|gxcopy|gxdl|gx|ios|mmio|disc)=(\d+)', line):
                 cur[k] = int(v)
         m = re.match(r'gxm frames=(\d+) scenes=\d+ draws=(\d+)', line)
         if m:
