@@ -195,16 +195,22 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   writing are the ones about aliasing and invariants, not the ones about dead
   code.
 
-  That last sentence was then measured and is also wrong, which is the more
-  useful half of this entry. Handing GCC the aliasing guarantee it was missing
-  -- guest RAM and CPUState are disjoint objects, stated with `restrict` on
-  inlined accessors taking both -- removes every `cpu->ram`, `cpu->ram_size`
-  and `g_mem_write_journal` reload, 1,548 loads across four chunks, exactly as
-  predicted. It buys 0.85% of emitted instructions. The loads were real and
-  removing them was real; the register pressure they were relieving went
-  straight back into spills, and on one of the four chunks the total got
-  *worse*. A saving in loads is not a saving in instructions, and neither is a
-  saving in time.
+  That last sentence was then measured and is the opposite of true, which is
+  the more useful half of this entry. Handing GCC the aliasing guarantee it was
+  missing -- guest RAM and CPUState are disjoint objects, stated with `restrict`
+  on inlined accessors taking both -- removes every `cpu->ram`, `cpu->ram_size`
+  and `g_mem_write_journal` reload, exactly as predicted: 6,256 of 30,523 loads
+  across twelve chunks, a fifth of all loads gone. The emitted code gets 4.3%
+  **bigger**. Those loads were relieving register pressure, and without them
+  GCC spills instead. A saving in loads is not a saving in instructions, let
+  alone in time, and an invariant the compiler reloads is not automatically an
+  invariant worth hoisting.
+
+  Sample the chunks at random when pricing this kind of change. On the four
+  *largest* chunks the same hoist measured -1.4%, -2.5%, -1.9% and +0.5%, which
+  reads like a small win worth bundling. The largest chunks are the ones already
+  under the most register pressure and they are not representative; twelve
+  chunks picked at random say +4.3% and settle it the other way.
 
 - **Census the emitted assembly by CPUState field before theorising about
   which C construct is expensive.** The plan's static emitter census counted C
