@@ -150,6 +150,20 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   and if a change genuinely needs to be resolved at that size, run each side
   more than once before believing either. This floor was established by
   accident after five A/Bs had already been run and published.
+- **A matched retrace is not a matched workload; check the draw count at the
+  window boundary.** Two passes of the same eboot with the same `input.txt`
+  came out 2.2x apart at retraces 800-1100, which no graphics change could do.
+  The reason is in the gxm report: at frame ~1100 one run had issued 530,006
+  draws and the other 1,109,774, and at frame 1400 it was 2.86 M against 3.34 M.
+  The input replay had landed somewhere slightly different and the game was
+  showing less. VI/s is the right yardstick for *speed* and stays so -- but it
+  only compares two runs that are drawing the same thing, and this input script
+  does not guarantee that from launch to launch. Before believing any device
+  A/B, print `draws=` from the watchdog tick nearest each window edge on both
+  sides; within a percent or two is the same workload, and a factor of two is
+  not a result. The good pass here was recognised by matching a third run of
+  the same binary to within 1% on exactly that counter.
+
 - **Diff the assembly before claiming a micro-optimisation; the compiler has
   usually done it already.** Two changes here were written up as removing work
   from the hottest store in the game -- a duplicated address predicate run
