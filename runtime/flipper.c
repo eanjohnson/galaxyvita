@@ -575,8 +575,12 @@ static void write_flipper(Flipper *f, CPUState *cpu, GxCp *gx, u32 off,
       return;
     }
     if (gx) {
-      gx_cp_write(gx, value, size);
-      pe_drain(f, gx);
+      /* Only drain when the write actually produced one. Draining is three
+       * calls into the CP and an interrupt recompute, and this is the hottest
+       * store in the game: 96M of the 96M MMIO writes in a 720 s run land
+       * here, against 2,764 tokens and 2,275 finishes. */
+      if (gx_cp_write(gx, value, size))
+        pe_drain(f, gx);
     }
     return;
   }

@@ -45,7 +45,11 @@ GxCp *gx_cp_create(void *mem1, u32 mem1_size, void *mem2, u32 mem2_size);
 void gx_cp_destroy(GxCp *cp);
 void gx_cp_reset(GxCp *cp);
 
-void gx_cp_write(GxCp *cp, u64 value, u8 size);
+/* Returns nonzero when the write left a PE event for the Flipper to collect.
+ * Nearly every write leaves none -- these come from two BP registers and the
+ * game writes millions of other bytes between them -- and the caller used to
+ * ask three times, across the C++ boundary, after every four-byte store. */
+int gx_cp_write(GxCp *cp, u64 value, u8 size);
 void gx_cp_set_sink(GxCp *cp, const GxSink *sink);
 
 /* Where the GX stack publishes which part of itself is running, for a sampler

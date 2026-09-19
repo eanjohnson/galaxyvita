@@ -604,7 +604,7 @@ static int watchdog(SceSize args, void *argp) {
      * thread could ever service a system event. */
     sceKernelDelayThreadCB(2 * 1000 * 1000);
     const Chassis *ch = g_watch;
-    char buf[320];
+    char buf[448];
     int n;
     if (!ch) {
       ticks++;
@@ -635,11 +635,20 @@ static int watchdog(SceSize args, void *argp) {
       sceIoClose(pfd);
     n = snprintf(buf, sizeof(buf),
                  "watchdog t=%us hits=%u (+%u) pc=0x%08x fifo=%u mmio_w=%u "
+                 /* The `gx` phase is the command parse, and a display list is
+                  * parsed again every time it is called -- so how much of that
+                  * phase is the stream and how much is replay is the ratio of
+                  * these two, and nothing else says it. */
+                 "gxb=%uk dls=%u dlb=%uk "
                  "free=%dk cdram=%dk phy=%dk wr=%d probe=%d lost=%u "
                  "io=%ums/%u "
                  "pres=%u prc=0x%08x clk=%d/%d/%d%s%s\n",
                  ticks * 2u, hits, hits - last, ch->last_pc, ch->fifo_writes,
-                 ch->mmio_writes, mem.size_user / 1024, mem.size_cdram / 1024,
+                 ch->mmio_writes,
+                 (unsigned)(gx_cp_bytes_in(ch->gx) / 1024u),
+                 (unsigned)gx_cp_display_lists(ch->gx),
+                 (unsigned)(gx_cp_display_list_bytes(ch->gx) / 1024u),
+                 mem.size_user / 1024, mem.size_cdram / 1024,
                  mem.size_phycont / 1024, wrote, probe, lost,
                  (unsigned)(g_disc_io_us / 1000u), g_disc_io_n,
                  g_presents, (unsigned)g_present_rc,

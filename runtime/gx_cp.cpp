@@ -427,10 +427,10 @@ void gx_cp_reset(GxCp *cp)
   cp->pe_token = 0;
 }
 
-void gx_cp_write(GxCp *cp, u64 value, u8 size)
+int gx_cp_write(GxCp *cp, u64 value, u8 size)
 {
   if (cp == nullptr)
-    return;
+    return 0;
   cp->bytes_in += size;
   if (cp->trace != nullptr && cp->traced < kTraceBytes)
   {
@@ -458,6 +458,7 @@ void gx_cp_write(GxCp *cp, u64 value, u8 size)
     std::fflush(stderr);
     cp->DumpNotes();
   }
+  return (cp->pe_token_set || cp->pe_token_irq || cp->pe_finish) ? 1 : 0;
 }
 
 u64 gx_cp_display_lists(const GxCp *cp) { return cp ? cp->dls : 0; }
