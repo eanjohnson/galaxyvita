@@ -148,10 +148,10 @@ static int hle_call(Chassis *ch, u32 pc) {
 static void hot_note(Chassis *ch, u32 pc) {
   u32 h = (pc >> 2) * 2654435761u;
   for (u32 i = 0; i < 8u; i++) {
-    u32 slot = (h + i) & (CHASSIS_HOT_SLOTS - 1u);
-    if (ch->hot_hits[slot] == 0u || ch->hot_pc[slot] == pc) {
-      ch->hot_pc[slot] = pc;
-      ch->hot_hits[slot]++;
+    ChassisHotSlot *const slot = &ch->hot[(h + i) & (CHASSIS_HOT_SLOTS - 1u)];
+    if (slot->hits == 0u || slot->pc == pc) {
+      slot->pc = pc;
+      slot->hits++;
       return;
     }
   }
@@ -160,7 +160,7 @@ static void hot_note(Chassis *ch, u32 pc) {
 u32 chassis_top_pcs(const Chassis *ch, u32 *out_pc, u32 *out_hits, u32 n) {
   u32 got = 0;
   for (u32 s = 0; s < CHASSIS_HOT_SLOTS; s++) {
-    u32 hits = ch->hot_hits[s];
+    u32 hits = ch->hot[s].hits;
     if (!hits)
       continue;
     u32 pos = got;
@@ -173,7 +173,7 @@ u32 chassis_top_pcs(const Chassis *ch, u32 *out_pc, u32 *out_hits, u32 n) {
       out_pc[j] = out_pc[j - 1u];
       out_hits[j] = out_hits[j - 1u];
     }
-    out_pc[pos] = ch->hot_pc[s];
+    out_pc[pos] = ch->hot[s].pc;
     out_hits[pos] = hits;
     if (got < n)
       got++;
@@ -970,6 +970,38 @@ static void log_osreport(Chassis *ch, u32 pc) {
   ch_log(ch, buf);
 }
 
+/* The union of the SMC sites and the HLE hook entry points, as a bitmap.
+ * Both were linear scans -- nineteen entries and nine -- run on every dispatch
+ * for a PC that is almost never either of them, and the dispatch loop's own
+ * bookkeeping is 11.4 s of the 124 s window at retraces 1100-1400. The table
+ * is built from those two arrays and from nothing else, so it cannot drift
+ * from what it filters, and a false positive costs exactly the scan it
+ * replaced. */
+enum { PC_FILTER_BITS = 13u, PC_FILTER_WORDS = (1u << PC_FILTER_BITS) / 32u };
+static u32 g_pc_filter[PC_FILTER_WORDS];
+
+static u32 pc_filter_slot(u32 pc) {
+  return ((pc >> 2) * 2654435761u) >> (32u - PC_FILTER_BITS);
+}
+
+static int pc_filter_hit(u32 pc) {
+  const u32 s = pc_filter_slot(pc);
+  return (int)((g_pc_filter[s >> 5] >> (s & 31u)) & 1u);
+}
+
+static void pc_filter_build(void) {
+  unsigned i;
+  memset(g_pc_filter, 0, sizeof(g_pc_filter));
+  for (i = 0; i < sizeof(k_smc_sites) / sizeof(k_smc_sites[0]); i++) {
+    const u32 s = pc_filter_slot(k_smc_sites[i]);
+    g_pc_filter[s >> 5] |= 1u << (s & 31u);
+  }
+  for (i = 0; i < sizeof(k_hle) / sizeof(k_hle[0]); i++) {
+    const u32 s = pc_filter_slot(k_hle[i].pc);
+    g_pc_filter[s >> 5] |= 1u << (s & 31u);
+  }
+}
+
 static u32 smc_tick(Chassis *ch, u32 pc) {
   u32 n = 0;
   for (unsigned i = 0; i < sizeof(k_smc_sites) / sizeof(k_smc_sites[0]); i++) {
@@ -1044,6 +1076,7 @@ static void setup_wii_globals(Chassis *ch, u32 bss_addr, u32 bss_size) {
 int chassis_init(Chassis *ch, void *mem1, u32 mem1_size, void *mem2,
                  u32 mem2_size, ChassisLogFn log, void *log_user) {
   memset(ch, 0, sizeof(*ch));
+  pc_filter_build();
   ch->log = log;
   ch->log_user = log_user;
   if (!mem1 || mem1_size < GC_MAIN_RAM_SIZE)
@@ -1371,17 +1404,21 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
               ch->mmio_writes);
       return 1;
     }
-    smc_tick(ch, pc);
-    if (ch->smc_hits > 256u) {
-      ch->stop_reason = CHASSIS_STOP_SMC;
-      ch_logf(ch, "SMC storm smc_hits=%u pc=0x%08x blocks=%u", ch->smc_hits, pc,
-              blocks);
-      return 0;
-    }
-
-    if (hle_call(ch, pc)) {
-      blocks++;
-      continue;
+    /* Nothing below can fire for a PC the filter does not name, and
+     * `smc_hits` only grows inside `smc_tick`, so the storm check is still
+     * taken on the dispatch that would have tripped it. */
+    if (pc_filter_hit(pc)) {
+      smc_tick(ch, pc);
+      if (ch->smc_hits > 256u) {
+        ch->stop_reason = CHASSIS_STOP_SMC;
+        ch_logf(ch, "SMC storm smc_hits=%u pc=0x%08x blocks=%u", ch->smc_hits,
+                pc, blocks);
+        return 0;
+      }
+      if (hle_call(ch, pc)) {
+        blocks++;
+        continue;
+      }
     }
     {
       /* Rolling window of distinct block entries. A boot that parks in a wait
@@ -1402,8 +1439,7 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
     /* GV_CENSUS_FROM=<blocks> restarts the census once the boot is past its
      * one-off work, so the tail of a long run is not buried under it. */
     if (ch->census_from && blocks == ch->census_from) {
-      memset(ch->hot_pc, 0, sizeof(ch->hot_pc));
-      memset(ch->hot_hits, 0, sizeof(ch->hot_hits));
+      memset(ch->hot, 0, sizeof(ch->hot));
       ch_logf(ch, "census restart at block %u", blocks, 0, 0);
     }
     hot_note(ch, pc);

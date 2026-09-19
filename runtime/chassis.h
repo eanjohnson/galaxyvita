@@ -46,6 +46,11 @@ enum {
 
 #define CHASSIS_HOT_SLOTS 4096u
 
+typedef struct {
+  u32 pc;
+  u32 hits;
+} ChassisHotSlot;
+
 typedef struct Chassis {
   CPUState cpu;
   Flipper flipper;
@@ -160,8 +165,10 @@ typedef struct Chassis {
   int stop_reason;
   int owns_ram;
   int stop_on_fifo;
-  u32 hot_pc[CHASSIS_HOT_SLOTS];
-  u32 hot_hits[CHASSIS_HOT_SLOTS];
+  /* One array of pairs rather than two arrays indexed alike. The census is
+   * probed at a hashed slot on every dispatch, so two 16 KB tables meant two
+   * cache misses where one pair of adjacent words takes one. */
+  ChassisHotSlot hot[CHASSIS_HOT_SLOTS];
   /* WUDIsLinkedWBC instrumentation -- see hle_wud_is_ready in chassis.c. */
   u32 wud_log;
   int wud_real;
