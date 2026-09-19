@@ -2,6 +2,42 @@
 
 Living log. Newest entry first. Record evidence, not hopes.
 
+## 2026-09-18 — The GPU now overlaps the next frame, for 1.07x, and the dedupe gets its time back
+
+The wait measured the day before was worth 1.105x and was serialisation rather
+than load, so the fix was never to skip it -- skipping it lets the next frame's
+vertices land in an arena the GPU is still reading -- but to wait for less.
+There are two arenas, and what a scene actually needs is that the GPU has
+finished with *the one it is about to write*, not that the GPU is idle.
+
+So each scene ends with a fragment notification of its own:
+`sceGxmEndScene(ctx, NULL, &fence[arena])` stamps a counter the GPU writes when
+that scene retires, and `begin_scene_if_needed` calls
+`sceGxmNotificationWait` on the fence belonging to the arena it is rotating
+onto. With two arenas that scene is the frame before last, which has had a
+whole frame of emulated CPU time to retire in, so the wait is nearly always
+already satisfied.
+
+| retraces | waited for the GPU | overlapped | |
+|---|---|---|---|
+| 800-1100 | 2.71 VI/s | 2.90 VI/s | **1.070x** |
+| 1100-1400 | 2.27 VI/s | 2.41 VI/s | **1.062x** |
+
+One eboot both ways -- the sides differ only by whether `gpusync.txt` is on the
+card -- so nothing here can be blamed on the build. `gxcopy` falls 10.4s to 2.9s
+and 9.7s to 2.1s, and every other phase is unmoved to the tenth of a second:
+guest 54.4/54.4, gx 17.2/17.2, gxvtx 18.7/18.5, gxsub 12.0/12.0, disp 11.6/11.4,
+ios 8.2/8.2. That is the shape of a stall being removed rather than work.
+
+The gate is the one that matters for a race: eight device frames dumped each
+way, from the same build, byte-identical. A CPU writing an arena the GPU is
+still reading shows up as corrupted geometry, in the frame, not in any counter.
+
+`gpusync.txt` now means "go back to waiting for the whole GPU", and stays as the
+control for future graphics measurements. The 1100-1400 window is 132s to 124s,
+and the phase profile there is now guest 54.4s, gxvtx 18.5s, gx 17.2s,
+gxsub 12.0s, disp 11.4s, ios 8.2s, gxcopy 2.1s.
+
 ## 2026-09-18 — The end-of-frame GPU wait is worth 1.105x, and it is pure serialisation
 
 `present()` ends the scene and then calls `gxm_finish()`, a full wait for the
