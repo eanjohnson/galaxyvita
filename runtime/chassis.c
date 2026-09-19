@@ -197,12 +197,6 @@ static void ch_logf(Chassis *ch, const char *fmt, ...) {
   ch_log(ch, buf);
 }
 
-static int in_fifo(u32 ea) {
-  u32 top = ea >> 24;
-  u32 off = ea & 0x00FFFFFFu;
-  return (top == 0xCCu || top == 0x0Cu) && off >= 0x8000u && off < 0x9000u;
-}
-
 static void poke32(CPUState *cpu, u32 addr, u32 value) {
   mem_write32(cpu, addr, value);
 }
@@ -299,7 +293,11 @@ static void ext_write(CPUState *cpu, u32 ea, u64 value, u8 size) {
     return;
   }
   ch->mmio_writes++;
-  if (in_fifo(ea)) {
+  /* One answer, used twice. `in_fifo` and `is_wgp` were the same four compares
+   * written out separately, and this is 99.9% of every MMIO store in the
+   * game. */
+  const int wgp = is_wgp(ea);
+  if (wgp) {
     ch->fifo_writes++;
     if (!ch->fifo_hit) {
       ch->fifo_hit = 1;
@@ -321,7 +319,7 @@ static void ext_write(CPUState *cpu, u32 ea, u64 value, u8 size) {
    * a draw-submission-bound one, which no device measurement has ever done. */
   {
     u8 was = ch->phase;
-    ch->phase = is_wgp(ea) ? CHASSIS_PH_GX : CHASSIS_PH_MMIO;
+    ch->phase = wgp ? CHASSIS_PH_GX : CHASSIS_PH_MMIO;
     flipper_write(&ch->flipper, cpu, ch->gx, ea, value, size);
     ch->phase = was;
   }
