@@ -53,14 +53,14 @@ void gx_gxm_set_frag_mode(unsigned mode);
  * in it; selecting them lets one device run try each. */
 void gx_gxm_set_tex_init_mode(unsigned mode);
 
-/* Skip the full GPU wait at the end of each frame.
+/* Go back to waiting for the whole GPU at the end of every frame.
  *
- * A measurement knob, not a feature: with the wait gone the emulated CPU can
- * overwrite a vertex arena the GPU is still reading, so the frames are not to
- * be trusted. What it measures is honest, because the emulator does exactly
- * the same work either way -- it answers whether the GPU is what the frame
- * rate is waiting on. Must be called before gx_gxm_init(). */
-void gx_gxm_set_no_finish(unsigned on);
+ * The frame is fenced per arena now, so a scene waits only for the scene that
+ * last wrote the arena it is about to write. This puts the old unconditional
+ * wait back, which is how the two are compared out of one build: the A/B is
+ * then a card file rather than a second eboot, and no difference between the
+ * two sides can be blamed on the build. Must be called before gx_gxm_init(). */
+void gx_gxm_set_frame_sync(unsigned on);
 
 /* Drop the texture cache so the next bind re-creates under a new init mode.
  * Wait for the GPU first. For the selftest; the game never needs it. */

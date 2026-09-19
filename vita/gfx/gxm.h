@@ -42,6 +42,22 @@ void gxm_free(SceUID uid);
 void gxm_begin_scene(void);
 void gxm_end_scene(void);
 
+/* Ending a scene against a fence, and waiting for one.
+ *
+ * The drawing layer reuses a small number of vertex and index arenas, and the
+ * only thing that made reuse safe was waiting for the whole GPU at the end of
+ * every frame -- which measured at 1.105x of the frame rate, spent doing
+ * nothing. A fence is the same guarantee without the stall: the GPU stamps it
+ * when that scene's fragment stage retires, so a scene about to write an arena
+ * need only wait for the scene that last used it, which by then is a frame
+ * old and almost always already done.
+ *
+ * `fence` is a slot index below GXM_FENCES. Waiting on a slot that was never
+ * ended against returns immediately, as does waiting on one already retired. */
+#define GXM_FENCES 4u
+void gxm_end_scene_fenced(unsigned fence);
+void gxm_fence_wait(unsigned fence);
+
 /* Blocks until every queued swap has retired. */
 void gxm_finish(void);
 

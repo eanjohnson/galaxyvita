@@ -36,6 +36,15 @@ static SceGxmColorSurface g_display_surface[DISPLAY_BUFFERS];
 static SceGxmSyncObject *g_display_sync[DISPLAY_BUFFERS];
 static SceGxmDepthStencilSurface g_depth_surface;
 
+/* One notification per fence slot, out of the region GXM reserves for exactly
+ * this. `armed` is what makes waiting on an unused or already-waited slot free
+ * rather than a hang: sceGxmNotificationWait blocks until the word holds the
+ * value, and a slot the GPU was never asked to stamp never will. */
+static volatile unsigned int *g_notify_region;
+static SceGxmNotification g_fence[GXM_FENCES];
+static unsigned g_fence_value[GXM_FENCES];
+static unsigned char g_fence_armed[GXM_FENCES];
+
 static unsigned g_back;   /* the buffer being rendered into */
 static unsigned g_front;  /* the buffer on screen */
 static unsigned g_frames; /* total scenes ended */
@@ -305,6 +314,19 @@ int gxm_init(void) {
 
   g_back = 0;
   g_front = DISPLAY_BUFFERS - 1u;
+
+  g_notify_region = sceGxmGetNotificationRegion();
+  if (g_notify_region != NULL) {
+    unsigned i;
+    for (i = 0; i < GXM_FENCES; i++) {
+      g_fence[i].address = g_notify_region + i;
+      g_fence[i].value = 0u;
+      *(g_fence[i].address) = 0u;
+      g_fence_value[i] = 0u;
+      g_fence_armed[i] = 0u;
+    }
+  }
+
   g_up = 1;
   return 1;
 }
@@ -322,11 +344,9 @@ void gxm_begin_scene(void) {
                    &g_display_surface[g_back], &g_depth_surface);
 }
 
-void gxm_end_scene(void) {
+static void end_scene_common(const SceGxmNotification *fragment) {
   DisplayData data;
-  if (!g_up)
-    return;
-  sceGxmEndScene(g_context, NULL, NULL);
+  sceGxmEndScene(g_context, NULL, fragment);
   sceGxmPadHeartbeat(&g_display_surface[g_back], g_display_sync[g_back]);
 
   data.address = g_display_buffer[g_back];
@@ -335,6 +355,34 @@ void gxm_end_scene(void) {
   g_front = g_back;
   g_back = (g_back + 1u) % DISPLAY_BUFFERS;
   g_frames++;
+}
+
+void gxm_end_scene(void) {
+  if (!g_up)
+    return;
+  end_scene_common(NULL);
+}
+
+void gxm_end_scene_fenced(unsigned fence) {
+  if (!g_up)
+    return;
+  if (fence >= GXM_FENCES || g_notify_region == NULL) {
+    end_scene_common(NULL);
+    return;
+  }
+  /* Values only ever go up, so a stamp from this scene is never mistaken for
+   * one left by the scene that used the slot a frame ago. */
+  g_fence_value[fence]++;
+  g_fence[fence].value = g_fence_value[fence];
+  end_scene_common(&g_fence[fence]);
+  g_fence_armed[fence] = 1u;
+}
+
+void gxm_fence_wait(unsigned fence) {
+  if (!g_up || fence >= GXM_FENCES || !g_fence_armed[fence])
+    return;
+  sceGxmNotificationWait(&g_fence[fence]);
+  g_fence_armed[fence] = 0u;
 }
 
 int gxm_capture(unsigned char *rgba) {
@@ -351,10 +399,17 @@ int gxm_capture(unsigned char *rgba) {
 }
 
 void gxm_finish(void) {
+  unsigned i;
   if (!g_up)
     return;
   sceGxmFinish(g_context);
   sceGxmDisplayQueueFinish();
+  /* Everything has retired, so every fence has been reached whether or not
+   * anybody waited on it. Leaving them armed would make the next wait block on
+   * a stamp that has already happened -- which is harmless -- but disarming
+   * them keeps "armed" meaning what it says. */
+  for (i = 0; i < GXM_FENCES; i++)
+    g_fence_armed[i] = 0u;
 }
 
 void gxm_shutdown(void) {

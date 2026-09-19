@@ -221,7 +221,7 @@ typedef struct {
   unsigned textured_draws;
   unsigned sampler_index;
   unsigned frag_mode;
-  unsigned no_finish;
+  unsigned frame_sync;
   /* The bind's own return code, and what was bound. sceGxmSetFragmentTexture
    * reports failure and the call site threw it away, so a rejected texture
    * left the unit unbound -- which samples white, which is the symptom. */
@@ -294,10 +294,10 @@ static char g_error[256];
 /* Outside `g`, because gx_gxm_init() memsets it and the mode has to survive
  * being chosen before the backend comes up. */
 static unsigned g_frag_mode;
-static unsigned g_no_finish;
+static unsigned g_frame_sync;
 
 void gx_gxm_set_frag_mode(unsigned mode) { g_frag_mode = mode; }
-void gx_gxm_set_no_finish(unsigned on) { g_no_finish = on; }
+void gx_gxm_set_frame_sync(unsigned on) { g_frame_sync = on; }
 
 /* How a decoded image is turned into an SceGxmTexture. Every stage of the
  * texture path has been measured correct on the console and tex2D still
@@ -873,7 +873,7 @@ int gx_gxm_init(const GxRegs *regs) {
   g.regs = regs;
   g.tex_arena_uid = -1;
   g.frag_mode = g_frag_mode;
-  g.no_finish = g_no_finish;
+  g.frame_sync = g_frame_sync;
   g.tex_init_mode = g_tex_init_mode;
   g.copy_w = EFB_W;
   g.copy_h = 448;
@@ -1005,6 +1005,12 @@ static void begin_scene_if_needed(void) {
   if (g.in_scene)
     return;
   g.arena_index = (g.arena_index + 1) % ARENA_COUNT;
+  /* The GPU may still be reading this arena from the scene that last used it,
+   * which with two arenas is the frame before last. That is the only thing the
+   * end-of-frame wait was protecting, and this is the same guarantee without
+   * the stall -- by now that scene has had a whole frame of emulated CPU time
+   * to retire in, so the wait is nearly always already satisfied. */
+  gxm_fence_wait((unsigned)g.arena_index);
   g.vert_used = 0;
   g.index_used = 0;
   gxm_begin_scene();
@@ -1315,25 +1321,22 @@ void gx_gxm_dump_frames(const char *dir, unsigned count, unsigned stride) {
 static void present(void) {
   if (!g.in_scene)
     return;
-  gxm_end_scene();
-  /* Stage 1 runs the whole pipeline on the emulated CPU's thread and waits for
-   * the GPU before reusing an arena. Emulation was far slower than the display
-   * when that was written, so the wait cost nothing measurable and it removed
-   * a whole class of "the GPU was still reading that" bug from the bring-up.
+  /* Stamp the arena's fence rather than waiting for the whole GPU.
    *
-   * That is no longer obviously true: removing per-draw state calls moved 4.4s
-   * out of submission and put 4.3s straight back into this wait. The knob is
-   * how that is measured -- it does not make skipping the wait safe, because
-   * the next frame's vertices then land in an arena the GPU may still be
-   * reading. A dump or a snap needs the frame finished, and gets it: both go
-   * through gxm_capture(), which waits for the GPU itself.
+   * This used to be an unconditional gxm_finish(). Emulation was far slower
+   * than the display when that was written, so the wait cost nothing and it
+   * removed a whole class of "the GPU was still reading that" bug from the
+   * bring-up. It stopped being free: the wait measured at 1.105x of the frame
+   * rate, and because the GPU consumes the parameter buffer while the scene is
+   * being recorded, every second saved in submission came straight back as a
+   * second more waiting -- which is why three separate CPU-side savings in the
+   * graphics path all measured flat.
    *
-   * The first version of this guard said `|| g.dump_dir[0]`, meaning to spare
-   * dumped frames -- and main.c calls gx_gxm_dump_frames() unconditionally, so
-   * dump_dir is always set and the knob never skipped anything. The run still
-   * logged that the wait had been skipped. A whole device run measured a
-   * control that did nothing and reported it as "no change". */
-  if (!g.no_finish)
+   * A dump or a snap still needs the frame finished and still gets it: both go
+   * through gxm_capture(), which waits for the GPU itself. The old behaviour
+   * stays behind a knob, so the comparison can be re-taken from one build. */
+  gxm_end_scene_fenced((unsigned)g.arena_index);
+  if (g.frame_sync)
     gxm_finish();
   g.in_scene = 0;
   dump_frame();
