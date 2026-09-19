@@ -1485,7 +1485,7 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
       ch->cpu.cr = (ch->cpu.cr & ~(0xFu << 28)) |
                    ((0x2u | ((ch->cpu.xer >> 31) & 1u)) << 28);
       ch->cpu.pc = OS_IDLE_WAIT;
-      ch->cpu.downcount = (s64)SLICE_CYCLES - (s64)ch->idle_used;
+      ch->cpu.downcount = (s32)SLICE_CYCLES - (s32)ch->idle_used;
       ch->idle_skips++;
     } else if (!dolrecomp_call(&ch->cpu, pc)) {
       ch->dispatch_misses++;
@@ -1506,7 +1506,7 @@ int chassis_run(Chassis *ch, u32 max_blocks) {
      * regenerated tree cannot leave a stale number in place. */
     if (pc == OS_IDLE_WAIT && !folded && ch->idle_skip &&
         ch->cpu.pc == OS_IDLE_WAIT) {
-      u32 used = (u32)((s64)SLICE_CYCLES - ch->cpu.downcount);
+      u32 used = (u32)((s32)SLICE_CYCLES - ch->cpu.downcount);
       u32 ea = ch->cpu.gpr[13] + (u32)(s32)OS_IDLE_RUNQ_OFF;
       if (mem_read32(&ch->cpu, ea) != 0u) {
         /* It spun the whole slice, so whatever it polls is still zero. If the
