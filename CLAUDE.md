@@ -158,8 +158,8 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   idle fold credits that span forward to the next scheduled event, VI retraces
   *are* scheduled events, and so emulated time races ahead precisely when
   nothing is being drawn. The threaded run measured **5.50 VI/s against 2.50**
-  and was **nineteen times slower** -- 180 KB of GX commands in 580 s where the
-  same eboot with the thread off did it in 30. Nothing about the VI number was
+  and had drawn **60 primitives by retrace 1400 against 3,019,002** for the same
+  eboot with the thread off. Nothing about the VI number was
   wrong; it answered the question it is built to answer. Before quoting VI/s,
   ask whether the change can alter how much emulated time passes per unit of
   guest progress. If it can, quote bytes decoded, draws, or dispatches per real

@@ -13,13 +13,14 @@ the hope was to overlap it with the 125 s of recompiled code beside it.
 **It does not overlap. It serialises, and much worse than before.** One eboot,
 two passes, `gputhread.txt` the only difference:
 
-| | GX bytes decoded | wall clock to get there | VI retraces spent |
-|---|---|---|---|
-| thread off | 180 KB | 30 s | ~60 |
-| thread on | 180 KB | 580 s | 3,091 |
+| at VI retrace 1400 | cumulative draws | draws/s over 1100-1400 |
+|---|---|---|
+| thread off | 3,019,002 | 18.5k |
+| thread on | **60** | 0.0k |
 
-Nineteen times slower at matched graphics work, and fifty times more emulated
-time spent doing it.
+Sixty draws against three million. Matched on GX bytes instead: 180 KB decoded
+in 30 s with the thread off and 580 s with it on, nineteen times slower, and
+fifty times more emulated time spent getting there.
 
 **The `speed` line reported the threaded run at 5.50 VI/s against 2.50.** That
 is not a bug in the measurement, it is the measurement working as designed on a
