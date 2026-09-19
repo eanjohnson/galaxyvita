@@ -195,6 +195,34 @@ Claude-Session: https://claude.ai/code/session_01M7SFsAsZLFosK55HNuG34y
   writing are the ones about aliasing and invariants, not the ones about dead
   code.
 
+  That last sentence was then measured and is also wrong, which is the more
+  useful half of this entry. Handing GCC the aliasing guarantee it was missing
+  -- guest RAM and CPUState are disjoint objects, stated with `restrict` on
+  inlined accessors taking both -- removes every `cpu->ram`, `cpu->ram_size`
+  and `g_mem_write_journal` reload, 1,548 loads across four chunks, exactly as
+  predicted. It buys 0.85% of emitted instructions. The loads were real and
+  removing them was real; the register pressure they were relieving went
+  straight back into spills, and on one of the four chunks the total got
+  *worse*. A saving in loads is not a saving in instructions, and neither is a
+  saving in time.
+
+- **Census the emitted assembly by CPUState field before theorising about
+  which C construct is expensive.** The plan's static emitter census counted C
+  text and priced two targets -- guest-register caching at 5.80% of emitted
+  code, the memory fast-path invariants at 4.78%. Both were measured before
+  being built and between them they were worth 0.85%. What the plan does not
+  mention anywhere, because nobody thought to look at it, is `downcount`: an
+  `s64` slice counter read-modify-written at the head of every basic block,
+  holding two registers on a 32-bit machine for a value that never leaves
+  [-1280, 10000]. It was the single hottest field by a factor of three, and
+  narrowing it to `s32` removed 7.4% to 10.8% of emitted instructions -- most
+  of it not the arithmetic but the freed register letting GCC keep guest
+  registers live, which is the win the 5.80% target was aiming at and could not
+  reach directly. `scripts/census-emitted.py` buckets every load in a compiled
+  chunk by the field it touches and takes seconds to run. Run it first. A
+  census of the source ranks what you thought to name; a census of the
+  assembly ranks what is there.
+
 - **A change worth a percent cannot be measured on its own here, so bundle
   them.** The noise floor is 3%, and by this point every remaining CPU-side
   saving is one to two: the PE drain, the prototype vertex, the dispatch PC
