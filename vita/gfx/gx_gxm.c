@@ -262,6 +262,19 @@ typedef struct {
   int alpha_tex_set, alpha_valid;
   unsigned skip_vp, skip_tex, skip_alpha, skip_stream;
 
+  /* The draw being accumulated.
+   *
+   * GX submits about seven vertices at a time and the skip counters say 99% of
+   * consecutive primitives ask for state the context already holds -- so they
+   * are the same draw, split up only because that is how the FIFO delivers
+   * them. Indices go into one arena in submission order, so merging a
+   * primitive into the open batch is arithmetic on a count. The batch is
+   * issued the moment anything would have to be pushed, and at end of scene,
+   * which is what keeps it going out under the state it was recorded for. */
+  unsigned pend_first, pend_count;
+  int pend_arena;
+  unsigned gxdraws, batched;
+
   Arena arena[ARENA_COUNT];
   int arena_index;
   unsigned vert_used, index_used;
@@ -670,12 +683,14 @@ static void set_alpha_uniforms_reg(int textured, u32 reg) {
   sceGxmSetUniformDataF(buf, g.u_op[i], 0, 4, op);
 }
 
-static void set_depth_state(u32 zmode) {
-  SceGxmContext *const ctx = gxm_context();
+/* What a GX zmode means, without touching the context. Split out so a
+ * primitive can be asked "would this change the depth state?" before anything
+ * is pushed -- which is what decides whether it can join the open batch. */
+static void depth_from(u32 zmode, unsigned *func_out, unsigned *write_out) {
   const unsigned test = zmode & 1u;
-  const unsigned write = (zmode >> 4) & 1u;
   unsigned func;
 
+  *write_out = (zmode >> 4) & 1u;
   switch (test ? ((zmode >> 1) & 7u) : 7u) {
   case 0: func = SCE_GXM_DEPTH_FUNC_NEVER; break;
   case 1: func = SCE_GXM_DEPTH_FUNC_LESS; break;
@@ -686,6 +701,14 @@ static void set_depth_state(u32 zmode) {
   case 6: func = SCE_GXM_DEPTH_FUNC_GREATER_EQUAL; break;
   default: func = SCE_GXM_DEPTH_FUNC_ALWAYS; break;
   }
+  *func_out = func;
+}
+
+static void set_depth_state(u32 zmode) {
+  SceGxmContext *const ctx = gxm_context();
+  unsigned func, write;
+
+  depth_from(zmode, &func, &write);
   if (!g.depth_valid || func != g.depth_func) {
     sceGxmSetFrontDepthFunc(ctx, (SceGxmDepthFunc)func);
     sceGxmSetBackDepthFunc(ctx, (SceGxmDepthFunc)func);
@@ -1011,6 +1034,7 @@ static void begin_scene_if_needed(void) {
    * the stall -- by now that scene has had a whole frame of emulated CPU time
    * to retire in, so the wait is nearly always already satisfied. */
   gxm_fence_wait((unsigned)g.arena_index);
+  g.pend_count = 0u; /* nothing can be open here: present() flushed */
   g.vert_used = 0;
   g.index_used = 0;
   gxm_begin_scene();
@@ -1162,10 +1186,27 @@ static unsigned emit_topology(unsigned char prim, unsigned base, unsigned n) {
   return g.index_used - start;
 }
 
+/* Issue the accumulated draw. Must be called before anything pushes state,
+ * because the batch goes out under the state it was recorded for -- and at end
+ * of scene, because the arena it indexes is about to be handed to the GPU. */
+static void flush_batch(void) {
+  if (g.pend_count == 0u)
+    return;
+  sceGxmDraw(gxm_context(), SCE_GXM_PRIMITIVE_TRIANGLES, SCE_GXM_INDEX_FORMAT_U32,
+             &g.arena[g.pend_arena].indices[g.pend_first], g.pend_count);
+  g.gxdraws++;
+  g.pend_count = 0u;
+}
+
 static void on_prim_end(void *user) {
   SceGxmContext *ctx = gxm_context();
-  unsigned first = g.index_used;
+  const unsigned first = g.index_used;
   unsigned count;
+  const GvTex *tex;
+  u32 bmode, zmode, amode;
+  SceGxmFragmentProgram *prog;
+  unsigned dfunc, dwrite;
+  int joins;
   (void)user;
 
   if (!g.prim_ok || g.prim_count < 3u)
@@ -1176,60 +1217,85 @@ static void on_prim_end(void *user) {
 
   /* Which program this draw goes out on depends on the texture the BP
    * registers name right now, so it is decided per primitive -- GX rebinds
-   * between draws as freely as it rewrites the viewport. Both are only
-   * pushed to the context when they actually change. */
-  {
-    const GvTex *tex = bind_texture();
-    const u32 bmode = g.regs ? g.regs->bp[0x41u] : 0u;
-    const u32 zmode = g.regs ? g.regs->bp[0x40u] : 0u;
-    const u32 amode = g.regs ? g.regs->bp[0xF3u] : 0u;
-    SceGxmFragmentProgram *const prog = frag_program(tex != NULL, bmode);
-    if (prog != g.prog_bound) {
-      sceGxmSetFragmentProgram(ctx, prog);
-      g.prog_bound = prog;
-      g.alpha_valid = 0;
-      g.bound = NULL;
-    }
-    if (!g.alpha_valid || amode != g.alpha_reg_set ||
-        (tex != NULL) != g.alpha_tex_set) {
-      set_alpha_uniforms_reg(tex != NULL, amode);
-      g.alpha_reg_set = amode;
-      g.alpha_tex_set = tex != NULL;
-      g.alpha_valid = 1;
-    } else {
-      g.skip_alpha++;
-    }
-    set_depth_state(zmode);
-    g.last_bmode = bmode;
-    g.last_zmode = zmode;
-    g.last_amode = amode;
-    if (bmode & 1u)
-      g.draws_blend++;
-    if (!((bmode >> 3) & 1u))
-      g.draws_nocolor++;
-    if (((g.last_amode >> 16) & 7u) != 7u || ((g.last_amode >> 19) & 7u) != 7u)
-      g.draws_atest++;
-    if (!tex)
-      g.draws_untex++;
-    else if (tex->w <= 16 && tex->h <= 16)
-      g.draws_tex_tiny++;
-    else
-      g.draws_tex_big++;
-    if (tex) {
-      if (tex != g.bound) {
-        const int rc = sceGxmSetFragmentTexture(ctx, g.sampler_index, &tex->tex);
-        if (rc < 0)
-          g.set_tex_rc = rc;
-      } else {
-        g.skip_tex++;
-      }
-      g.last_tex_w = tex->w;
-      g.last_tex_h = tex->h;
-      g.textured_draws++;
-    }
-    g.bound = tex;
+   * between draws as freely as it rewrites the viewport. */
+  tex = bind_texture();
+  bmode = g.regs ? g.regs->bp[0x41u] : 0u;
+  zmode = g.regs ? g.regs->bp[0x40u] : 0u;
+  amode = g.regs ? g.regs->bp[0xF3u] : 0u;
+  prog = frag_program(tex != NULL, bmode);
+  depth_from(zmode, &dfunc, &dwrite);
+
+  /* Counted per primitive whichever way this goes, so that `draws` and the
+   * state histogram keep meaning what they meant before batching. */
+  g.last_bmode = bmode;
+  g.last_zmode = zmode;
+  g.last_amode = amode;
+  if (bmode & 1u)
+    g.draws_blend++;
+  if (!((bmode >> 3) & 1u))
+    g.draws_nocolor++;
+  if (((amode >> 16) & 7u) != 7u || ((amode >> 19) & 7u) != 7u)
+    g.draws_atest++;
+  if (!tex)
+    g.draws_untex++;
+  else if (tex->w <= 16 && tex->h <= 16)
+    g.draws_tex_tiny++;
+  else
+    g.draws_tex_big++;
+  if (tex) {
+    g.last_tex_w = tex->w;
+    g.last_tex_h = tex->h;
+    g.textured_draws++;
+  }
+  g.draws++;
+  g.verts += g.prim_count;
+
+  /* Would any push fire? If not, and these indices carry straight on from the
+   * open batch, this primitive is part of that draw and nothing needs saying
+   * to the GPU at all. Each clause is the exact condition of the push below
+   * it, so the two cannot drift apart without the batch going out wrong. */
+  joins = g.pend_count != 0u && g.pend_arena == g.arena_index &&
+          first == g.pend_first + g.pend_count && prog == g.prog_bound &&
+          g.alpha_valid && amode == g.alpha_reg_set &&
+          (tex != NULL) == g.alpha_tex_set && g.depth_valid &&
+          dfunc == g.depth_func && dwrite == g.depth_write &&
+          tex == g.bound && g.vp_valid &&
+          memcmp(g.vp_set, g.vp, sizeof(g.vp_set)) == 0 &&
+          g.arena[g.arena_index].verts == g.stream_set;
+  if (joins) {
+    g.pend_count += count;
+    g.batched++;
+    return;
   }
 
+  flush_batch();
+
+  if (prog != g.prog_bound) {
+    sceGxmSetFragmentProgram(ctx, prog);
+    g.prog_bound = prog;
+    g.alpha_valid = 0;
+    g.bound = NULL;
+  }
+  if (!g.alpha_valid || amode != g.alpha_reg_set ||
+      (tex != NULL) != g.alpha_tex_set) {
+    set_alpha_uniforms_reg(tex != NULL, amode);
+    g.alpha_reg_set = amode;
+    g.alpha_tex_set = tex != NULL;
+    g.alpha_valid = 1;
+  } else {
+    g.skip_alpha++;
+  }
+  set_depth_state(zmode);
+  if (tex) {
+    if (tex != g.bound) {
+      const int rc = sceGxmSetFragmentTexture(ctx, g.sampler_index, &tex->tex);
+      if (rc < 0)
+        g.set_tex_rc = rc;
+    } else {
+      g.skip_tex++;
+    }
+  }
+  g.bound = tex;
   if (!g.vp_valid || memcmp(g.vp_set, g.vp, sizeof(g.vp_set)) != 0) {
     set_viewport_from(g.vp);
     memcpy(g.vp_set, g.vp, sizeof(g.vp_set));
@@ -1243,10 +1309,9 @@ static void on_prim_end(void *user) {
   } else {
     g.skip_stream++;
   }
-  sceGxmDraw(ctx, SCE_GXM_PRIMITIVE_TRIANGLES, SCE_GXM_INDEX_FORMAT_U32,
-             &g.arena[g.arena_index].indices[first], count);
-  g.draws++;
-  g.verts += g.prim_count;
+  g.pend_first = first;
+  g.pend_count = count;
+  g.pend_arena = g.arena_index;
 }
 
 /* Outside `g`, for the same reason the fragment mode is: the request comes
@@ -1321,6 +1386,7 @@ void gx_gxm_dump_frames(const char *dir, unsigned count, unsigned stride) {
 static void present(void) {
   if (!g.in_scene)
     return;
+  flush_batch();
   /* Stamp the arena's fence rather than waiting for the whole GPU.
    *
    * This used to be an unconditional gxm_finish(). Emulation was far slower
@@ -1390,6 +1456,7 @@ void gx_gxm_flush_textures(void) {
   g.tex_decoded = 0;
   g.bound = NULL;
   g.prog_bound = NULL;
+  g.pend_count = 0u;
   g.alpha_valid = 0;
   g.vp_valid = 0;
   g.stream_set = NULL;
@@ -1414,7 +1481,8 @@ void gx_gxm_report(char *out, unsigned n) {
            "dumped=%u snaps=%u tex=%u/%u arena=%uk miss_unmap=%u miss_fmt=%u "
            "miss_space=%u smp=%u fdbg=%u last=%dx%d fin=%dx%d dtiny=%u "
            "dbig=%u duntex=%u bm=%08x zm=%08x am=%08x fvar=%u frc=0x%08x "
-           "dblend=%u dnocol=%u datest=%u skip=vp%u/tex%u/a%u/s%u "
+           "dblend=%u dnocol=%u datest=%u gxdraws=%u bat=%u "
+           "skip=vp%u/tex%u/a%u/s%u "
            "uv=[%.3f %.3f]-[%.3f %.3f]",
            g.frames, g.scenes, g.draws, g.verts, g.dropped_full,
            g.dropped_nomatrix, g.dropped_novp, g.dropped_unsupported,
@@ -1427,6 +1495,7 @@ void gx_gxm_report(char *out, unsigned n) {
            (unsigned)g.last_bmode, (unsigned)g.last_zmode,
            (unsigned)g.last_amode, g.frag_n, (unsigned)g.frag_rc,
            g.draws_blend, g.draws_nocolor, g.draws_atest,
+           g.gxdraws, g.batched,
            g.skip_vp, g.skip_tex, g.skip_alpha, g.skip_stream,
            (double)g.uv_lo[0], (double)g.uv_lo[1], (double)g.uv_hi[0],
            (double)g.uv_hi[1]);
