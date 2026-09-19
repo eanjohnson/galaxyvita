@@ -1,5 +1,6 @@
 /* GalaxyVita CoreHost Phase 4: AOT + Flipper HLE + the sceGxm backend. */
 #include "chassis.h"
+#include "gx_cp.h"
 #include "gx_queue.h"
 #include "gx_gxm.h"
 #include "gxm.h"
@@ -50,6 +51,7 @@
 #define GPUSYNC_FLAG "ux0:data/galaxyvita/gpusync.txt"
 #define NODLCACHE_FLAG "ux0:data/galaxyvita/nodlcache.txt"
 #define GPUTHREAD_FLAG "ux0:data/galaxyvita/gputhread.txt"
+#define RENDERCPU2_FLAG "ux0:data/galaxyvita/rendercpu2.txt"
 /* Where the sampling profiler leaves its guest-PC histogram. */
 #define PROF_PC_PATH "ux0:data/galaxyvita/prof-pc.txt"
 /* Buttons to hold down without anyone holding them. The boot is gated by
@@ -680,11 +682,12 @@ static int watchdog(SceSize args, void *argp) {
       const GxQueue *q = ch->flipper.gx_queue;
       int qn = snprintf(buf, sizeof(buf),
                         "  gxq depth=%u run=%u wedged=%u stalls=%u spins=%u "
-                        "idle=%d writes=%llu\n",
+                        "idle=%d writes=%llu copies=%u\n",
                         gxq_depth(q), q->running, q->wedged,
                         (unsigned)q->stalls, (unsigned)q->stall_spins,
                         g_render_idle_spins,
-                        (unsigned long long)ch->flipper.gx_writes);
+                        (unsigned long long)ch->flipper.gx_writes,
+                        gx_cp_copies());
       sceIoWrite(fd, buf, (SceSize)(qn > 0 ? qn : 0));
     }
     /* What the GXM backend has actually drawn, every tick.
@@ -911,7 +914,30 @@ static int render_worker(SceSize args, void *argp) {
     log_line("render thread: no chassis, not starting");
     return 0;
   }
-  pin_self(AFFINITY_CPU1, "render");
+  /* Which core, and it matters more than it looks.
+   *
+   * CPU1 is the display thread's core, and the display thread is what retires
+   * GXM display-queue frames. The consumer here blocks inside sceGxmEndScene
+   * when that queue is full, and it does not yield while it has bytes to
+   * parse -- so on one core the two can hold each other up: the queue stays
+   * full because display cannot run, and the consumer cannot finish because
+   * the queue is full. The first threaded run on hardware spent 94% of this
+   * thread inside the EFB copy while the guest sat 90% idle waiting for it,
+   * for 6.8x fewer dispatches per second than the same eboot with the thread
+   * off. That is the shape a core-contention stall makes.
+   *
+   * CPU2 carries audio-io, the watchdog and the profiler, all of which are
+   * nearly idle. Putting the consumer there tests the explanation, so it is a
+   * card file rather than a rebuild. */
+  {
+    SceIoStat vst;
+    if (sceIoGetstat(RENDERCPU2_FLAG, &vst) >= 0) {
+      pin_self(AFFINITY_CPU2, "render");
+      log_line("render thread on CPU2 by " RENDERCPU2_FLAG);
+    } else {
+      pin_self(AFFINITY_CPU1, "render");
+    }
+  }
   log_line("render thread up");
   g_gxq.running = 1u;
   while (!g_gxq.quit) {

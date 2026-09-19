@@ -96,6 +96,9 @@ u64 gx_cp_undecoded(const GxCp *cp);
  * how long the command is and once to run it. Memoise it, with the knob so
  * one build measures both sides. */
 void gx_cp_set_vertex_size_cache(GxCp *cp, int on);
+/* EFB copies handed to the sink since the run started. Divide the profiler's
+ * `gxcopy` sample count by this for milliseconds spent inside each one. */
+u32 gx_cp_copies(void);
 u64 gx_cp_vsize_hits(const GxCp *cp);
 u64 gx_cp_vsize_misses(const GxCp *cp);
 

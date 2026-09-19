@@ -26,6 +26,16 @@
  * nothing rather than publishing a lie. */
 static u8 g_ph_submit;
 static u8 g_ph_copy;
+/* How many EFB copies the sink has been handed.
+ *
+ * Paired with the sampling profiler's `gxcopy` phase this gives time per copy
+ * without a clock in the hot path: samples at 1 kHz divided by copies is
+ * milliseconds inside the callback. The first threaded run needed exactly that
+ * number and did not have it -- 94% of the render thread sat in this phase and
+ * nothing said whether that was many slow copies or a few that blocked for
+ * seconds, which are different faults. File scope rather than per-GxCp because
+ * there is one command processor per run and this is a diagnostic. */
+static volatile u32 g_copy_n;
 
 #include "moderngekko/address_space.hpp"
 #include "moderngekko/gx_command_processor.hpp"
@@ -222,6 +232,7 @@ struct GxCp final
       if (sink.copy != nullptr)
       {
         moderngekko::PhaseScope phase(g_ph_copy);
+        __atomic_add_fetch(&g_copy_n, 1u, __ATOMIC_RELAXED);
         sink.copy(sink.user, value & 0xFFFFFFu);
       }
       break;
@@ -510,6 +521,11 @@ void gx_cp_set_vertex_size_cache(GxCp *cp, int on)
 {
   if (cp != nullptr)
     cp->processor.SetVertexSizeCache(on != 0);
+}
+
+u32 gx_cp_copies(void)
+{
+  return __atomic_load_n(&g_copy_n, __ATOMIC_RELAXED);
 }
 
 u64 gx_cp_vsize_hits(const GxCp *cp)
