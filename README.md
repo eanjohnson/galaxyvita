@@ -13,7 +13,14 @@ Built on [DolRecomp](https://github.com/ExpansionPak/DolRecomp),
 [RecompCore](https://github.com/ExpansionPak/RecompCore). Process and
 identity gates follow [GalaxyPad](https://github.com/chrissotraidis/galaxypad).
 
-**Status:** private technical bring-up. Not playable. See [PROGRESS.md](PROGRESS.md).
+**Status:** work in progress, and not playable yet. On a real Vita the game boots
+through the strap and controller screens to the **title screen and the file
+select**, rendered by the Vita's GPU. It runs far below full speed: about 2 to
+12 VI/s in the measured boot windows, against the Wii's 60. The current
+bottleneck is a stall in GXM at the end-of-frame copy, which is being narrowed
+down. [PROGRESS.md](PROGRESS.md) is the measured log, newest first.
+
+The submodules are forks of the projects above, on their `galaxyvita` branches.
 
 ## What you need
 
